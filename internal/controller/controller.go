@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/tibordp/wigglenet/internal/annotations"
+	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/firewall"
@@ -86,18 +86,20 @@ func (c *controller) processNextItem() bool {
 }
 
 func (c *controller) processChanges(key interface{}) error {
-	if key == config.CurrentNodeName {
-		if err := c.ensureCNI(); err != nil {
+	if !config.FirewallOnly && !config.NativeRouting {
+		if err := c.applyNetworkingConfiguration(); err != nil {
 			return err
 		}
 	}
 
-	if err := c.applyNetworkingConfiguration(); err != nil {
+	if err := c.applyFirewall(); err != nil {
 		return err
 	}
 
-	if err := c.applyFirewall(); err != nil {
-		return err
+	if !config.FirewallOnly && key == config.CurrentNodeName {
+		if err := c.ensureCNI(); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -153,7 +155,7 @@ func (c *controller) ensureCNI() error {
 			PodCIDRs: podCIDRs,
 		}
 
-		return c.cniwriter.Write(config)
+		return c.cniwriter.WriteCNIConfig(config)
 	}
 
 	return nil
@@ -167,12 +169,12 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
-	nodeAddress := net.ParseIP(node.Annotations[annotations.NodeIpAnnotation])
+	nodeAddress := net.ParseIP(node.Annotations[annotation.NodeIpAnnotation])
 	if nodeAddress == nil {
 		return nil
 	}
 
-	publicKeyStr := node.Annotations[annotations.PublicKeyAnnotation]
+	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
 	if publicKeyStr == "" {
 		return nil
 	}
@@ -210,7 +212,6 @@ func (c *controller) handleErr(err error, key interface{}) {
 	klog.Warningf("dropping node %q out of the queue: %v", key, err)
 }
 
-// Run begins watching and syncing.
 func (c *controller) Run(stopCh chan struct{}) {
 	defer runtime.HandleCrash()
 

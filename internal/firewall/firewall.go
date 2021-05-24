@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	filterChain = ipt.Chain("PSYLLIUM-FIREWALL")
-	natChain    = ipt.Chain("PSYLLIUM-MASQ")
+	filterChain = ipt.Chain("WIGGLENET-FIREWALL")
+	natChain    = ipt.Chain("WIGGLENET-MASQ")
 
 	// Sync iptables every minute
 	syncInterval = 1 * time.Minute

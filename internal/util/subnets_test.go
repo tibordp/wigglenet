@@ -2,8 +2,9 @@ package util
 
 import (
 	"net"
-	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func parseCIDR(cidr string) net.IPNet {
@@ -35,10 +36,7 @@ func TestSummarizeSubnets(t *testing.T) {
 	}
 
 	results := SummarizeSubnets(subnets)
-
-	if !reflect.DeepEqual(results, expected) {
-		t.Errorf("\nexpected: %v\ngot:      %v", expected, results)
-	}
+	assert.Equal(t, expected, results)
 }
 
 func TestSummarizeSubnetsOverlapping(t *testing.T) {
@@ -60,10 +58,7 @@ func TestSummarizeSubnetsOverlapping(t *testing.T) {
 	}
 
 	results := SummarizeSubnets(subnets)
-
-	if !reflect.DeepEqual(results, expected) {
-		t.Errorf("\nexpected: %v\ngot:      %v", expected, results)
-	}
+	assert.Equal(t, expected, results)
 }
 
 func TestSummarizeSubnetsWholeNet(t *testing.T) {
@@ -84,8 +79,5 @@ func TestSummarizeSubnetsWholeNet(t *testing.T) {
 	}
 
 	results := SummarizeSubnets(subnets)
-
-	if !reflect.DeepEqual(results, expected) {
-		t.Errorf("\nexpected: %v\ngot:      %v", expected, results)
-	}
+	assert.Equal(t, expected, results)
 }
