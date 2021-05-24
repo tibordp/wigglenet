@@ -20,7 +20,7 @@ Wigglenet runs as a daemonset on every node and does the following things:
 To install Wigglenet with the default settings:
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/master/deploy/manifest.yaml
+kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.1.0/deploy/manifest.yaml
 ```
 
 See the comments in the manifest for configuration options.
