@@ -81,3 +81,19 @@ func TestSummarizeSubnetsWholeNet(t *testing.T) {
 	results := SummarizeSubnets(subnets)
 	assert.Equal(t, expected, results)
 }
+
+func TestSummarizeSubnetsEmbedded(t *testing.T) {
+	subnets := []net.IPNet{
+		parseCIDR("192.168.0.0/16"),
+		parseCIDR("::ffff:192.168.0.0/120"),
+		parseCIDR("::ffff:192.168.1.0/120"),
+	}
+
+	expected := []net.IPNet{
+		parseCIDR("::ffff:192.168.0.0/119"),
+		parseCIDR("192.168.0.0/16"),
+	}
+
+	results := SummarizeSubnets(subnets)
+	assert.Equal(t, expected, results)
+}

@@ -26,6 +26,7 @@ func TestSyncFilter(t *testing.T) {
 	).Return(true, nil)
 
 	mockIptables.On("RestoreAll", []byte(`*filter
+-F WIGGLENET-FIREWALL
 :WIGGLENET-FIREWALL - [0:0]
 -A WIGGLENET-FIREWALL -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 -A WIGGLENET-FIREWALL -p ipv6-icmp -j RETURN
@@ -51,6 +52,7 @@ func TestSyncNat(t *testing.T) {
 		"--comment", "masquerade non-LOCAL traffic",
 	).Return(true, nil)
 	mockIptables.On("RestoreAll", []byte(`*nat
+-F WIGGLENET-MASQ
 :WIGGLENET-MASQ - [0:0]
 -A WIGGLENET-MASQ -d 2001:db8::/64 -j RETURN
 -A WIGGLENET-MASQ -j MASQUERADE

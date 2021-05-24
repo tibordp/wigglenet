@@ -2,5 +2,5 @@ package annotation
 
 const (
 	PublicKeyAnnotation string = "wigglenet/public-key"
-	NodeIpAnnotation    string = "wigglenet/node-ip"
+	NodeIpsAnnotation   string = "wigglenet/node-ips"
 )

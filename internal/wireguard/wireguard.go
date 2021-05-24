@@ -73,6 +73,7 @@ func (c *WireguardConfig) canonicalize() {
 
 type Peer struct {
 	Endpoint  net.IP
+	NodeCIDRs []net.IPNet
 	PodCIDRs  []net.IPNet
 	PublicKey []byte
 }
@@ -84,7 +85,12 @@ func (c *wireguardManager) PublicKey() []byte {
 func getPeerSubnets(peers []Peer) []net.IPNet {
 	routes := make([]net.IPNet, 0)
 	for _, peer := range peers {
-		routes = append(routes, peer.PodCIDRs...)
+		for _, cidr := range peer.PodCIDRs {
+			isIPv6 := cidr.IP.To4() == nil
+			if (isIPv6 && !config.NativeRoutingIPv6) || (!isIPv6 && !config.NativeRoutingIPv4) {
+				routes = append(routes, peer.PodCIDRs...)
+			}
+		}
 	}
 	return util.SummarizeSubnets(routes)
 }
@@ -195,6 +201,14 @@ func (c *wireguardManager) applyPeerConfiguration(peers []Peer) error {
 	peerConfigs := make([]wgtypes.PeerConfig, len(peers))
 	for i, v := range peers {
 		peerConfigs[i].AllowedIPs = v.PodCIDRs
+		// Node CIDRs are allowed source of traffic via the tunnel, but traffic is not
+		// routed through the tunnel if it is destined to an external node IP. This is to
+		// allow return traffic to reach the pod when a pod contacted another node via its
+		// public address (e.g. a controller talking to apiserver). Routing node-to-node
+		// traffic through the tunnel is much more tricky as we can cause routing loops if
+		// not careful.
+		// https://www.wireguard.com/netns/#routing-all-your-traffic
+		peerConfigs[i].AllowedIPs = append(peerConfigs[i].AllowedIPs, v.NodeCIDRs...)
 		peerConfigs[i].Endpoint = &net.UDPAddr{IP: v.Endpoint, Port: config.WGPort}
 		key, err := wgtypes.NewKey(v.PublicKey)
 		if err != nil {

@@ -79,6 +79,8 @@ spec:
           value: "false" 
           # Optional interface from which to take the node's
           # IP address (default: none)   
+        - name: NODE_IP_INTERFACES
+          value: eth0
         volumeMounts:
         - name: cfg
           mountPath: /etc/wigglenet

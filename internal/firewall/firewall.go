@@ -154,6 +154,7 @@ func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []ne
 
 	lines := bytes.NewBuffer(nil)
 	writeLine(lines, "*nat")
+	writeLine(lines, "-F", string(natChain))
 	writeLine(lines, ipt.MakeChainLine(natChain))
 	for _, cidr := range nonMasqCidrs {
 		writeRule(lines, ipt.Append, natChain, "-d", cidr.String(), "-j", "RETURN")
@@ -181,10 +182,12 @@ func (c *firewallManager) syncFilterRules(tables ipTables, nonFilterCidrs []net.
 
 	lines := bytes.NewBuffer(nil)
 	writeLine(lines, "*filter")
+	writeLine(lines, "-F", string(filterChain))
 	writeLine(lines, ipt.MakeChainLine(filterChain))
 	writeRule(lines, ipt.Append, filterChain, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN")
 	if isIPv6 {
-		// Always allow ICMPv6 through. This is necesary at least for path MTU discovery.
+		// This is a bit opinionated, but I prefer to always allow ICMPv6 through. This is necesary at least
+		// for path MTU discovery, but echo-request is also very useful for diagnostics.
 		// https://datatracker.ietf.org/doc/html/rfc4890
 		writeRule(lines, ipt.Append, filterChain, "-p", "ipv6-icmp", "-j", "RETURN")
 	}

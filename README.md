@@ -8,7 +8,7 @@ Wigglenet is a simple network plugin for Kubernetes. Wigglenet seeks to achieve 
 
 ## Description
 
-Wigglenet uses the standard [`ptp`](https://www.cni.dev/plugins/current/main/ptp/) CNI plugins with [`host-local` IPAM](https://www.cni.dev/plugins/current/ipam/host-local/) to allocate IP addresses to pods based on the node. Wigglenet also establishes an overlay network using [Wireguard](https://www.wireguard.com/). In addition to encapsulation, this also provides hassle-free encryption of node-to-pod, pod-to-node and pod-to-pod traffic.
+Wigglenet uses the standard [`ptp`](https://www.cni.dev/plugins/current/main/ptp/) CNI plugins with [`host-local` IPAM](https://www.cni.dev/plugins/current/ipam/host-local/) to allocate IP addresses to pods based on the node. Wigglenet also establishes an overlay network using [Wireguard](https://www.wireguard.com/). In addition to encapsulation, this also provides hassle-free encryption of pod-to-pod traffic.
 
 Wigglenet runs as a daemonset on every node and does the following things:
 - Initializes each new node on startup (generates a Wireguard private key) and writes the CNI configuration
@@ -23,9 +23,9 @@ To install Wigglenet with the default settings:
 kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.1.0/deploy/manifest.yaml
 ```
 
-See the comments in the manifest for configuration options.
+See [the manifest](./deploy/manifest.yaml) for configuration. The configuration options are [described here](./internal/config/config.go).  
 
-## Allocate public IPv6 addreses to pods
+## Public IPv6 addresses for pods
 
 Wigglenet expects that each `Node` object have `.spec.PodCIDRs` set, but does not require that they be drawn from a specific contiguous supernet. In most cases, the node CIDRs are allocated automatically by kube-controller-manager (e.g. from the prefixes in `--pod-network-cidr` passed to kubeadm). However, if `--pod-network-cidr` is not set or if `--allocate-node-cidrs false` is passed to kube-controller-manager, the `PodCIDRs` will have to be set on each node either manually or through some other mechanism.
 
@@ -39,11 +39,12 @@ In the future Wigglenet may automatically configure `.spec.PodCIDRs` for nodes b
 
 Wigglenet can run in a firewall-only mode by passing `FIREWALL_ONLY=1` environment variable. Running in this mode will not provision a Wireguard tunnel and CNI configuration, but will only filter and masquerade traffic, similar to [ip-masq-agent](https://github.com/kubernetes-sigs/ip-masq-agent). Unlike `ip-masq-agent`, Wigglenet will automatically determine all the pod CIDRs that should not be masqueraded or filtered by watching Nodes allowing for flexible subnetting.
 
-Native routing (`NATIVE_ROUTING=1`) is similar. Run in this mode, Wireguard will place CNI configuration file on all nodes and sync the firewall rules, but will not create the Wireguard overlay and routing rules. This assumes that there is something outside of the cluster that knows how to route packets for pods to the appropriate node.
+Native routing is configured (`NATIVE_ROUTING_IPV4=1` / `NATIVE_ROUTING_IPV6=1`). Run in this mode, native routing will only be used for the selected address family instead of the Wireguard overlay. This assumes that there is something outside of the cluster that knows how to route packets for pods to the appropriate node, as generally the pod-to-pod traffic will be forwarded along the default route on each node.
 
 ## Limitations
 
 - Wigglenet does not currently support `NetworkPolicy`
+- Host-to-host traffic does not pass through the Wireguard tunnel, so it is not encrypted. This is not a major issue as services using host networking generally use TLS, but there are some notable exceptions (e.g. the default configuration for Prometheus node-exporter).
 
 ## Acknowledgements
 
