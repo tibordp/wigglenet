@@ -2,57 +2,18 @@ package util
 
 import (
 	"net"
-	"os"
-	"strconv"
+	"strings"
 
+	"github.com/tibordp/wigglenet/internal/config"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
-type IPFamily string
-
-const (
-	IPv4Family      IPFamily = "ipv4"
-	IPv6Family      IPFamily = "ipv6"
-	DualStackFamily IPFamily = "dual"
-)
-
-func GetEnvOrDefault(name string, fallback string) string {
-	if val, ok := os.LookupEnv(name); ok {
-		return val
-	} else {
-		return fallback
-	}
-}
-
-func GetEnvOrDefaultInt(name string, fallback int) int {
-	if val, ok := os.LookupEnv(name); ok {
-		if i, err := strconv.Atoi(val); err != nil {
-			return fallback
-		} else {
-			return i
-		}
-	} else {
-		return fallback
-	}
-}
-
-func GetEnvOrDefaultBool(name string, fallback bool) bool {
-	if val, ok := os.LookupEnv(name); ok {
-		if i, err := strconv.ParseBool(val); err != nil {
-			return fallback
-		} else {
-			return i
-		}
-	} else {
-		return fallback
-	}
-}
-
 func SingleHostSubnet(ip net.IP) net.IPNet {
+	canonical := Canonicalize(ip)
 	return net.IPNet{
-		IP:   ip,
-		Mask: net.CIDRMask(8*len(ip), 8*len(ip)),
+		IP:   canonical,
+		Mask: net.CIDRMask(8*len(canonical), 8*len(canonical)),
 	}
 }
 
@@ -121,48 +82,68 @@ func GetPodNetworkLocalAddresses(podCIDRs []net.IPNet) []net.IP {
 	return localAddresses
 }
 
-func GetInterfaceIP(family IPFamily, ifaceName string) (net.IP, error) {
-	iface, err := net.InterfaceByName(ifaceName)
-	if err != nil {
-		return nil, err
-	}
+func GetInterfaceIPs(ifaces string) ([]net.IP, error) {
+	ipAddresses := make([]net.IP, 0)
 
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, addr := range addrs {
-		var ip net.IP
-		switch v := addr.(type) {
-		case *net.IPAddr:
-			ip = v.IP
-		case *net.IPNet:
-			ip = v.IP
-		default:
+	for _, iface := range strings.Split(ifaces, ",") {
+		iface, err := net.InterfaceByName(iface)
+		if err != nil {
+			klog.Warningf("interface %v not found, skipping", iface)
 			continue
 		}
 
-		if ip.IsGlobalUnicast() {
-			if ip.To4() == nil && (family == IPv6Family || family == DualStackFamily) {
-				return ip, nil
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPAddr:
+				ip = v.IP
+			case *net.IPNet:
+				ip = v.IP
+			default:
+				continue
 			}
 
-			if ip.To4() != nil && (family == IPv4Family || family == DualStackFamily) {
-				return ip, nil
+			if ip.IsGlobalUnicast() {
+				ipAddresses = append(ipAddresses, ip)
 			}
 		}
 	}
-
-	return nil, nil
+	return ipAddresses, nil
 }
 
-func GetNodeAddress(node *v1.Node) net.IP {
+func GetNodeAddresses(node *v1.Node) []net.IP {
+	ipAddresses := make([]net.IP, 0)
 	for _, v := range node.Status.Addresses {
-		if v.Type == v1.NodeInternalIP {
+		if v.Type == v1.NodeInternalIP || v.Type == v1.NodeExternalIP {
 			addr := net.ParseIP(v.Address)
 			if addr != nil {
-				return addr
+				ipAddresses = append(ipAddresses, addr)
 			}
+		}
+	}
+	return ipAddresses
+}
+
+func Canonicalize(ip net.IP) net.IP {
+	v4 := ip.To4()
+	if v4 != nil {
+		// we could get ::ffff:a.b.c.d
+		return v4
+	}
+	return ip
+}
+
+func SelectIP(ips []net.IP, family config.IPFamily) *net.IP {
+	for _, ip := range ips {
+		if ip.To4() != nil && (family == config.IPv4Family || family == config.DualStackFamily) {
+			return &ip
+		} else if ip.To4() == nil && (family == config.IPv6Family || family == config.DualStackFamily) {
+			return &ip
 		}
 	}
 

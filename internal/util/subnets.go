@@ -91,7 +91,9 @@ func summarizeSubnets(subnets []net.IPNet, ipv6 bool) []net.IPNet {
 	markers := make([]marker, 0)
 	// convert IP networks into interval endpoints
 	for _, network := range subnets {
-		if network.IP.To4() == nil == ipv6 {
+		// Do not use .To4() check here. We specifically want to treat
+		// ::ffff:a.b.c.d/x as an IPv6 subnet.
+		if (len(network.IP) == net.IPv6len) == ipv6 {
 			markers = append(markers,
 				marker{
 					bound: getUpperBound(network.IP, network.Mask),

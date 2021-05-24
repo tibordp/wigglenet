@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"time"
@@ -73,26 +74,16 @@ func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Wi
 	}
 }
 
-func (c *controller) processNextItem() bool {
-	key, quit := c.queue.Get()
-	if quit {
-		return false
-	}
-
-	defer c.queue.Done(key)
-
-	c.handleErr(c.processChanges(key), key)
-	return true
-}
-
+// processChanges gets called on any change to a node object as well as additions and removals.
+// it computes the new state of the world and adjust the local networking setup accordingly
 func (c *controller) processChanges(key interface{}) error {
 	if !config.FirewallOnly && !config.NativeRouting {
-		if err := c.applyNetworkingConfiguration(); err != nil {
+		if err := c.applyWireguardConfiguration(); err != nil {
 			return err
 		}
 	}
 
-	if err := c.applyFirewall(); err != nil {
+	if err := c.applyFirewallRules(); err != nil {
 		return err
 	}
 
@@ -105,7 +96,9 @@ func (c *controller) processChanges(key interface{}) error {
 	return nil
 }
 
-func (c *controller) applyFirewall() error {
+// applyFirewallRules calculates the new pod network and sends it to the iptables sync
+// goroutine so that pod traffic can be appropriately filtered and masqueraded.
+func (c *controller) applyFirewallRules() error {
 	podCIDRs := make([]net.IPNet, 0)
 
 	for _, v := range c.indexer.List() {
@@ -118,7 +111,9 @@ func (c *controller) applyFirewall() error {
 	return nil
 }
 
-func (c *controller) applyNetworkingConfiguration() error {
+// applyWireguardConfiguration configures the Wireguard network interface and makes
+// appropriate changes to the routing table.
+func (c *controller) applyWireguardConfiguration() error {
 
 	peers := make([]wireguard.Peer, 0)
 	localAddresses := make([]net.IP, 0)
@@ -141,6 +136,10 @@ func (c *controller) applyNetworkingConfiguration() error {
 	return c.wireguard.ApplyConfiguration(&config)
 }
 
+// ensureCNI writes the local CNI configuration to /etc/cni/net.d if there were
+// relevant changes. The config will run only once on startup as .spec.podCIDRs
+// cannot be changed once set, but to keep things simple, it runs on all changes
+// to the node we are running on.
 func (c *controller) ensureCNI() error {
 	item, exists, _ := c.indexer.GetByKey(config.CurrentNodeName)
 	if node, ok := item.(*v1.Node); exists && ok {
@@ -169,11 +168,6 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
-	nodeAddress := net.ParseIP(node.Annotations[annotation.NodeIpAnnotation])
-	if nodeAddress == nil {
-		return nil
-	}
-
 	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
 	if publicKeyStr == "" {
 		return nil
@@ -185,8 +179,30 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
+	var nodeAddresses []net.IP
+	err = json.Unmarshal([]byte(node.Annotations[annotation.NodeIpsAnnotation]), &nodeAddresses)
+	if nodeAddresses == nil || err != nil {
+		klog.Warningf("invalid node-ips %v", node.Annotations[annotation.NodeIpsAnnotation])
+		return nil
+	}
+
+	nodeCidrs := make([]net.IPNet, 0, len(nodeAddresses))
+	for _, nodeAddress := range nodeAddresses {
+		if nodeAddresses == nil {
+			return nil
+		}
+		nodeCidrs = append(nodeCidrs, util.SingleHostSubnet(nodeAddress))
+	}
+
+	peerEndpoint := util.SelectIP(nodeAddresses, config.WireguardIPFamily)
+	if peerEndpoint == nil {
+		klog.Warningf("could not determine peer endpoint for %v", node.Name)
+		return nil
+	}
+
 	peer := &wireguard.Peer{
-		Endpoint:  nodeAddress,
+		Endpoint:  *peerEndpoint,
+		NodeCIDRs: nodeCidrs,
 		PodCIDRs:  podCIDRs,
 		PublicKey: publicKey,
 	}
@@ -228,7 +244,7 @@ func (c *controller) Run(stopCh chan struct{}) {
 	}
 
 	// After we have all the nodes in cache, sync the routing state
-	if err := c.applyNetworkingConfiguration(); err != nil {
+	if err := c.applyWireguardConfiguration(); err != nil {
 		runtime.HandleError(err)
 	}
 
@@ -236,6 +252,18 @@ func (c *controller) Run(stopCh chan struct{}) {
 
 	<-stopCh
 	klog.Info("stopping controller")
+}
+
+func (c *controller) processNextItem() bool {
+	key, quit := c.queue.Get()
+	if quit {
+		return false
+	}
+
+	defer c.queue.Done(key)
+
+	c.handleErr(c.processChanges(key), key)
+	return true
 }
 
 func (c *controller) runWorker() {

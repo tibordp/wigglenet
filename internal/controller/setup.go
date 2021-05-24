@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 
@@ -27,20 +28,32 @@ func SetupNode(nodeClient clientv1.NodeInterface, publicKey []byte) error {
 
 		node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
 
-		var nodeAddress net.IP
-		if config.NodeIPInterface == "" {
-			nodeAddress = util.GetNodeAddress(node)
-		} else {
-			nodeAddress, err = util.GetInterfaceIP(config.NodeIPFamily, config.NodeIPInterface)
-			if err != nil {
-				return err
+		// Determine all the node IP addresses
+		statusAddresses := util.GetNodeAddresses(node)
+		interfaceAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
+		if err != nil {
+			return err
+		}
+
+		keys := make(map[string]struct{})
+		nodeAddresses := make([]net.IP, 0)
+
+		// Remove duplicates
+		for _, coll := range [][]net.IP{statusAddresses, interfaceAddresses} {
+			for _, entry := range coll {
+				if _, value := keys[entry.String()]; !value {
+					keys[entry.String()] = struct{}{}
+					nodeAddresses = append(nodeAddresses, entry)
+				}
 			}
 		}
-		if nodeAddress == nil {
+
+		if len(nodeAddresses) == 0 {
 			return fmt.Errorf("could not determine node ip")
 		}
 
-		node.ObjectMeta.Annotations[annotation.NodeIpAnnotation] = nodeAddress.String()
+		val, _ := json.Marshal(nodeAddresses)
+		node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation] = string(val)
 
 		_, err = nodeClient.Update(context, node, metav1.UpdateOptions{})
 		return err
