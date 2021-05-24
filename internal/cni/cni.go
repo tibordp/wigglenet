@@ -57,11 +57,20 @@ type Range struct {
 	Gateway    net.IP         `json:"gateway,omitempty"`
 }
 
-type CNIConfigWriter struct {
+type CNIConfigWriter interface {
+	WriteCNIConfig(inputs CNIConfig) error
+}
+
+type cniConfigWriter struct {
 	lastConfig CNIConfig
 }
 
-func (c *CNIConfigWriter) Write(inputs CNIConfig) error {
+func NewCNIConfigWriter() CNIConfigWriter {
+	return &cniConfigWriter{}
+}
+
+// WriteCNIConfig writes the
+func (c *cniConfigWriter) WriteCNIConfig(inputs CNIConfig) error {
 	if reflect.DeepEqual(inputs, c.lastConfig) {
 		return nil
 	}

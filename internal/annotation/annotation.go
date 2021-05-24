@@ -1,4 +1,4 @@
-package annotations
+package annotation
 
 const (
 	PublicKeyAnnotation string = "wigglenet/public-key"
