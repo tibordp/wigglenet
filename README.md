@@ -21,7 +21,7 @@ Wigglenet runs as a daemonset on every node and does the following things:
 To install Wigglenet on a dual-stack cluster with the default settings:
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.1.0/deploy/manifest.yaml
+kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.2.0/deploy/manifest.yaml
 ```
 
 For customization and other configuration options see notes below and [the manifest](./deploy/manifest.yaml) for full reference.
