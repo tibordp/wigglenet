@@ -93,14 +93,13 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 	// Return an error if we want to have this address family in the cluster but weren't able
 	// to find an acceptable CIDR
 	if len(podsCidrs) == 0 {
-		return nil, fmt.Errorf(".spec.podCIDRs does not have a CIDR for ipv6=%v", ipv6)
+		return nil, fmt.Errorf("could not determine node cidr for ipv6=%v", ipv6)
 	}
 
 	return podsCidrs, nil
 }
 
 func setPodCidrsAnnotation(node *v1.Node) error {
-	// Simple logic for now, always take pod cidrs from .spec.podCIDRs
 	podCidrs := make([]net.IPNet, 0)
 	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv6, true); err != nil {
 		return err
@@ -119,10 +118,9 @@ func setPodCidrsAnnotation(node *v1.Node) error {
 }
 
 // SetupNode sets up the node annotations on each start.
-func SetupNode(nodeClient clientv1.NodeInterface, publicKey []byte) error {
-	context := context.Background()
+func SetupNode(ctx context.Context, nodeClient clientv1.NodeInterface, publicKey []byte) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		node, err := nodeClient.Get(context, config.CurrentNodeName, metav1.GetOptions{})
+		node, err := nodeClient.Get(ctx, config.CurrentNodeName, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -137,7 +135,7 @@ func SetupNode(nodeClient clientv1.NodeInterface, publicKey []byte) error {
 			return err
 		}
 
-		_, err = nodeClient.Update(context, node, metav1.UpdateOptions{})
+		_, err = nodeClient.Update(ctx, node, metav1.UpdateOptions{})
 		return err
 	})
 }

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,7 @@ import (
 )
 
 type Controller interface {
-	Run(stopCh chan struct{})
+	Run(ctx context.Context)
 }
 
 type controller struct {
@@ -228,17 +229,17 @@ func (c *controller) handleErr(err error, key interface{}) {
 	klog.Warningf("dropping node %q out of the queue: %v", key, err)
 }
 
-func (c *controller) Run(stopCh chan struct{}) {
+func (c *controller) Run(ctx context.Context) {
 	defer runtime.HandleCrash()
 
 	// Let the workers stop when we are done
 	defer c.queue.ShutDown()
 	klog.Info("starting controller")
 
-	go c.informer.Run(stopCh)
+	go c.informer.Run(ctx.Done())
 
 	// Wait for all involved caches to be synced, before processing items from the queue is started
-	if !cache.WaitForCacheSync(stopCh, c.informer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
 		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 		return
 	}
@@ -248,10 +249,10 @@ func (c *controller) Run(stopCh chan struct{}) {
 		runtime.HandleError(err)
 	}
 
-	go wait.Until(c.runWorker, time.Second, stopCh)
+	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	<-ctx.Done()
 
-	<-stopCh
-	klog.Info("stopping controller")
+	klog.Info("finished controller")
 }
 
 func (c *controller) processNextItem() bool {
