@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"reflect"
 	"strings"
@@ -34,7 +35,7 @@ type FirewallConfig struct {
 }
 
 func NewConfig(podCIDRs []net.IPNet) FirewallConfig {
-	aggregated := util.SummarizeSubnets(podCIDRs)
+	aggregated := util.SummarizeCIDRs(podCIDRs)
 	config := FirewallConfig{
 		PodCIDRs: aggregated,
 	}
@@ -49,11 +50,11 @@ type firewallManager struct {
 	firewallConfig FirewallConfig
 }
 
-type FirewallManager interface {
-	Run(stop chan struct{})
+type Manager interface {
+	Run(ctx context.Context)
 }
 
-func New(updates chan FirewallConfig) FirewallManager {
+func New(updates chan FirewallConfig) Manager {
 	exec := exec.New()
 	ip6tables := ipt.New(exec, ipt.ProtocolIPv6)
 	ip4tables := ipt.New(exec, ipt.ProtocolIPv4)
@@ -67,15 +68,16 @@ func New(updates chan FirewallConfig) FirewallManager {
 	return &m
 }
 
-func (c *firewallManager) Run(stop chan struct{}) {
+func (c *firewallManager) Run(ctx context.Context) {
 	klog.Infof("started syncing firewall rules")
+	defer klog.Infof("finished syncing firewall rules")
 
 	timer := time.NewTimer(0)
 	for {
 		// Sync rules whenever the configuration changes and at least
 		// once per minute (to recreate the rules if they are flushed)
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-timer.C:
 			timer.Reset(syncInterval)

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,19 +29,19 @@ import (
 )
 
 type Controller interface {
-	Run(stopCh chan struct{})
+	Run(ctx context.Context)
 }
 
 type controller struct {
 	indexer         cache.Indexer
 	queue           workqueue.RateLimitingInterface
 	informer        cache.Controller
-	wireguard       wireguard.WireguardManager
+	wireguard       wireguard.Manager
 	cniwriter       cni.CNIConfigWriter
 	firewallUpdates chan firewall.FirewallConfig
 }
 
-func NewController(clientset kubernetes.Interface, wireguardManager wireguard.WireguardManager, cniwriter cni.CNIConfigWriter, firewallUpdates chan firewall.FirewallConfig) *controller {
+func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, firewallUpdates chan firewall.FirewallConfig) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
@@ -103,7 +104,7 @@ func (c *controller) applyFirewallRules() error {
 
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
-			podCIDRs = append(podCIDRs, util.GetPodCIDRs(node)...)
+			podCIDRs = append(podCIDRs, util.GetPodCIDRsFromAnnotation(node)...)
 		}
 	}
 
@@ -121,7 +122,7 @@ func (c *controller) applyWireguardConfiguration() error {
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
 			if node.Name == config.CurrentNodeName {
-				podCIDRs := util.GetPodCIDRs(node)
+				podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 				localAddresses = util.GetPodNetworkLocalAddresses(podCIDRs)
 			} else {
 				peer := makePeer(node)
@@ -137,13 +138,12 @@ func (c *controller) applyWireguardConfiguration() error {
 }
 
 // ensureCNI writes the local CNI configuration to /etc/cni/net.d if there were
-// relevant changes. The config will run only once on startup as .spec.podCIDRs
-// cannot be changed once set, but to keep things simple, it runs on all changes
-// to the node we are running on.
+// relevant changes to pod CIDRs. This can change during the lifetime of the node,
+// e.g. if another address family is added to an existing cluster.
 func (c *controller) ensureCNI() error {
 	item, exists, _ := c.indexer.GetByKey(config.CurrentNodeName)
 	if node, ok := item.(*v1.Node); exists && ok {
-		podCIDRs := util.GetPodCIDRs(node)
+		podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 
 		if len(podCIDRs) == 0 {
 			klog.Infof("node %v does not have PodCIDRs assigned yet", node.Name)
@@ -161,15 +161,16 @@ func (c *controller) ensureCNI() error {
 }
 
 func makePeer(node *v1.Node) *wireguard.Peer {
-	podCIDRs := util.GetPodCIDRs(node)
-
-	if len(node.Spec.PodCIDRs) == 0 {
-		klog.Infof("node %v does not have PodCIDRs assigned yet", node.Name)
+	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
+	if publicKeyStr == "" {
+		// If we return here, the node is simply not initialized yet, which is normal,
+		// so we don't log anything.
 		return nil
 	}
 
-	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
-	if publicKeyStr == "" {
+	podCIDRs := util.GetPodCIDRsFromAnnotation(node)
+	if len(podCIDRs) == 0 {
+		klog.Warningf("node %v does not have PodCIDRs assigned yet", node.Name)
 		return nil
 	}
 
@@ -191,7 +192,7 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		if nodeAddresses == nil {
 			return nil
 		}
-		nodeCidrs = append(nodeCidrs, util.SingleHostSubnet(nodeAddress))
+		nodeCidrs = append(nodeCidrs, util.SingleHostCIDR(nodeAddress))
 	}
 
 	peerEndpoint := util.SelectIP(nodeAddresses, config.WireguardIPFamily)
@@ -228,17 +229,17 @@ func (c *controller) handleErr(err error, key interface{}) {
 	klog.Warningf("dropping node %q out of the queue: %v", key, err)
 }
 
-func (c *controller) Run(stopCh chan struct{}) {
+func (c *controller) Run(ctx context.Context) {
 	defer runtime.HandleCrash()
 
 	// Let the workers stop when we are done
 	defer c.queue.ShutDown()
 	klog.Info("starting controller")
 
-	go c.informer.Run(stopCh)
+	go c.informer.Run(ctx.Done())
 
 	// Wait for all involved caches to be synced, before processing items from the queue is started
-	if !cache.WaitForCacheSync(stopCh, c.informer.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
 		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 		return
 	}
@@ -248,10 +249,10 @@ func (c *controller) Run(stopCh chan struct{}) {
 		runtime.HandleError(err)
 	}
 
-	go wait.Until(c.runWorker, time.Second, stopCh)
+	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	<-ctx.Done()
 
-	<-stopCh
-	klog.Info("stopping controller")
+	klog.Info("finished controller")
 }
 
 func (c *controller) processNextItem() bool {

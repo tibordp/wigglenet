@@ -17,23 +17,17 @@ func parseCIDR(cidr string) net.IPNet {
 }
 
 func TestMakePeer2(t *testing.T) {
-	result := makePeer(&v1.Node{
+	result := *makePeer(&v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
 				"wigglenet/node-ips":   `["192.168.0.1","2001:db8::1234"]`,
-			},
-		},
-		Spec: v1.NodeSpec{
-			PodCIDR: "2001:db8::/64",
-			PodCIDRs: []string{
-				"2001:db8::/64",
-				"10.0.0.0/24",
+				"wigglenet/pod-cidrs":  `["2001:db8::/64","10.0.0.0/24"]`,
 			},
 		},
 	})
 
-	expected := &wireguard.Peer{
+	expected := wireguard.Peer{
 		Endpoint: net.ParseIP("192.168.0.1"),
 		NodeCIDRs: []net.IPNet{
 			parseCIDR("192.168.0.1/32"),
@@ -51,7 +45,7 @@ func TestMakePeer2(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, expected, result)
+	assert.Equal(t, &expected, &result)
 }
 
 func TestMakePeerInvalid(t *testing.T) {
@@ -60,13 +54,7 @@ func TestMakePeerInvalid(t *testing.T) {
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLwdHh8=",
 				"wigglenet/node-ips":   `["192.168.0.1","2001:db8::1234"]`,
-			},
-		},
-		Spec: v1.NodeSpec{
-			PodCIDR: "2001:db8::/64",
-			PodCIDRs: []string{
-				"2001:db8::/64",
-				"10.0.0.0/24",
+				"wigglenet/pod-cidrs":  `["2001:db8::/64","10.0.0.0/24"]`,
 			},
 		},
 	})
@@ -80,13 +68,7 @@ func TestMakePeerInvalid1(t *testing.T) {
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
 				"wigglenet/node-ips":   `["192.168.0.1","2001:db8::12345678"]`,
-			},
-		},
-		Spec: v1.NodeSpec{
-			PodCIDR: "2001:db8::/64",
-			PodCIDRs: []string{
-				"2001:db8::/64",
-				"10.0.0.0/24",
+				"wigglenet/pod-cidrs":  `["2001:db8::/64","10.0.0.0/24"]`,
 			},
 		},
 	})
@@ -100,9 +82,9 @@ func TestMakePeerInvalid2(t *testing.T) {
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
 				"wigglenet/node-ips":   `["192.168.0.1","2001:db8::1234"]`,
+				"wigglenet/pod-cidrs":  `["2001:db8::/6400","10.0.0.0/24"]`,
 			},
 		},
-		Spec: v1.NodeSpec{},
 	})
 
 	assert.Nil(t, result)

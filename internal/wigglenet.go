@@ -1,28 +1,30 @@
 package internal
 
 import (
+	"context"
+
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/controller"
 	"github.com/tibordp/wigglenet/internal/firewall"
 	"github.com/tibordp/wigglenet/internal/wireguard"
 
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 type Wigglenet interface {
-	Run()
+	Run(ctx context.Context)
 }
 
-func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
-	// creates the connection
-	kubeconf, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
+func New(ctx context.Context) (Wigglenet, error) {
+	kubeconfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	clientset, err := kubernetes.NewForConfig(kubeconf)
+	clientset, err := kubernetes.NewForConfig(kubeconfig)
 	if err != nil {
 		return nil, err
 	}
@@ -37,12 +39,12 @@ func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
 		cniwriter := cni.NewCNIConfigWriter()
 		ctrl = controller.NewController(clientset, nil, cniwriter, firewallUpdates)
 	} else {
-		wireguard, err := wireguard.NewWireguardManager()
+		wireguard, err := wireguard.NewManager()
 		if err != nil {
 			return nil, err
 		}
 
-		if err = controller.SetupNode(clientset.CoreV1().Nodes(), wireguard.PublicKey()); err != nil {
+		if err = controller.SetupNode(ctx, clientset.CoreV1().Nodes(), wireguard.PublicKey()); err != nil {
 			return nil, err
 		}
 
@@ -58,16 +60,14 @@ func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
 
 type wigglenet struct {
 	controller      controller.Controller
-	firewallManager firewall.FirewallManager
+	firewallManager firewall.Manager
 }
 
-func (c *wigglenet) Run() {
-	stop := make(chan struct{})
-	defer close(stop)
+func (c *wigglenet) Run(ctx context.Context) {
+	wg := wait.Group{}
 
-	go c.firewallManager.Run(stop)
-	go c.controller.Run(stop)
+	wg.StartWithContext(ctx, c.firewallManager.Run)
+	wg.StartWithContext(ctx, c.controller.Run)
 
-	// Wait forever
-	select {}
+	wg.Wait()
 }

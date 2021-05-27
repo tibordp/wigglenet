@@ -12,8 +12,8 @@ func parseCIDR(cidr string) net.IPNet {
 	return *c
 }
 
-func TestSummarizeSubnets(t *testing.T) {
-	subnets := []net.IPNet{
+func TestSummarizeCIDRs(t *testing.T) {
+	cidrs := []net.IPNet{
 		parseCIDR("192.168.1.0/24"),
 		parseCIDR("192.168.2.0/24"),
 		parseCIDR("192.168.3.0/24"),
@@ -35,12 +35,12 @@ func TestSummarizeSubnets(t *testing.T) {
 		parseCIDR("192.168.4.0/24"),
 	}
 
-	results := SummarizeSubnets(subnets)
+	results := SummarizeCIDRs(cidrs)
 	assert.Equal(t, expected, results)
 }
 
-func TestSummarizeSubnetsOverlapping(t *testing.T) {
-	subnets := []net.IPNet{
+func TestSummarizeCIDRsOverlapping(t *testing.T) {
+	cidrs := []net.IPNet{
 		parseCIDR("192.168.1.0/16"),
 		parseCIDR("192.168.2.0/24"),
 		parseCIDR("192.168.3.0/24"),
@@ -57,12 +57,12 @@ func TestSummarizeSubnetsOverlapping(t *testing.T) {
 		parseCIDR("192.168.0.0/16"),
 	}
 
-	results := SummarizeSubnets(subnets)
+	results := SummarizeCIDRs(cidrs)
 	assert.Equal(t, expected, results)
 }
 
-func TestSummarizeSubnetsWholeNet(t *testing.T) {
-	subnets := []net.IPNet{
+func TestSummarizeCIDRsWholeNet(t *testing.T) {
+	cidrs := []net.IPNet{
 		parseCIDR("128.0.0.1/1"),
 		parseCIDR("0.0.0.0/1"),
 
@@ -78,12 +78,12 @@ func TestSummarizeSubnetsWholeNet(t *testing.T) {
 		parseCIDR("0.0.0.0/0"),
 	}
 
-	results := SummarizeSubnets(subnets)
+	results := SummarizeCIDRs(cidrs)
 	assert.Equal(t, expected, results)
 }
 
-func TestSummarizeSubnetsEmbedded(t *testing.T) {
-	subnets := []net.IPNet{
+func TestSummarizeCIDRsEmbedded(t *testing.T) {
+	cidrs := []net.IPNet{
 		parseCIDR("192.168.0.0/16"),
 		parseCIDR("::ffff:192.168.0.0/120"),
 		parseCIDR("::ffff:192.168.1.0/120"),
@@ -94,6 +94,6 @@ func TestSummarizeSubnetsEmbedded(t *testing.T) {
 		parseCIDR("192.168.0.0/16"),
 	}
 
-	results := SummarizeSubnets(subnets)
+	results := SummarizeCIDRs(cidrs)
 	assert.Equal(t, expected, results)
 }

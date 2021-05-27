@@ -1,26 +1,29 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"os/signal"
+	"syscall"
 
-	"github.com/tibordp/wigglenet/internal"
+	wigglenet "github.com/tibordp/wigglenet/internal"
 	"k8s.io/klog/v2"
 )
 
-var kubeconfig string
-var master string
-
 func main() {
 	klog.InitFlags(nil)
+	defer klog.Flush()
 
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
-	flag.StringVar(&master, "master", "", "master url")
 	flag.Parse()
 
-	wigglenet, err := internal.NewWigglenet(master, kubeconfig)
+	context, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	wigglenet, err := wigglenet.New(context)
 	if err != nil {
 		klog.Fatal(err)
 	}
 
-	wigglenet.Run()
+	wigglenet.Run(context)
+	klog.Info("gracefully terminated")
 }

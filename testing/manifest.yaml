@@ -61,26 +61,22 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-          # Masquerade outgoing IPv4 traffic not destined
-          # to pod on another node
         - name: MASQUERADE_IPV4
-          value: "true"
-          # Masquerade outgoing IPv6 traffic not destined
-          # to pod on another node          
+          value: "true"      
         - name: MASQUERADE_IPV6
           value: "true"
-          # Filter direct IPv4 traffic to pods from
-          # outside the cluster
         - name: FILTER_IPV4
-          value: "false"
-          # Filter direct IPv6 traffic to pods from
-          # outside the cluster          
+          value: "false"      
         - name: FILTER_IPV6
           value: "false" 
-          # Optional interface from which to take the node's
-          # IP address (default: none)   
         - name: NODE_IP_INTERFACES
           value: eth0
+        - name: POD_CIDR_SOURCE_IPV6
+          value: file
+        - name: POD_CIDR_SOURCE_IPV4
+          value: spec
+        - name: POD_CIDR_SOURCE_PATH
+          value: /etc/wigglenet/cidrs.txt
         volumeMounts:
         - name: cfg
           mountPath: /etc/wigglenet
