@@ -13,10 +13,8 @@ Note that the last goal is not achieved yet. Wigglenet should be considered expe
 Wigglenet uses the standard [`ptp`](https://www.cni.dev/plugins/current/main/ptp/) CNI plugins with [`host-local` IPAM](https://www.cni.dev/plugins/current/ipam/host-local/) to allocate IP addresses to pods based on the node subnets. Wigglenet also establishes an overlay network using [Wireguard](https://www.wireguard.com/). In addition to encapsulation, this also provides hassle-free encryption of pod-to-pod traffic.
 
 Wigglenet runs as a daemonset on every node and does the following things:
-- Initializes each new node on startup (generates a Wireguard private key) and writes the CNI configuration
-- Runs a controller that adjusts the Wireguard peer configuration and routing table on each node as the network topology changes
-- Manages iptables rules for filtering and masquerading traffic 
-
+- Initializes each new node on startup, sets up the Wireguard interface and writes the CNI configuration
+- Runs a controller on each node that adjusts the Wireguard peer configuration, local routing table and iptables rules for filtering and masquerading as nodes come and go
 
 ## Installation
 
