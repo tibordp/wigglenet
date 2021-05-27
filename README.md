@@ -34,7 +34,7 @@ In the default configuration Wigglenet uses the networks specified in `.spec.pod
 
 This approach of having a single prefix for the whole cluster works in many cases well for IPv4 clusters, since pod networks almost always consist of RFC1918 addresses. In the case of IPv6, however, use of public addresses is generally preferred even for private networks. This presents a problem, since it can be hard to foresee what IPv6 network will be available to each node at the time of cluster creation.
 
-AWS provides a /56 network for each VPC, which can be used as the basis for `--pod-network-cidr` but some cloud providers such as Hetzner and Digital Ocean provide a routable IPv6 network to each instance which is dynamically assigned at instance creation and cannot be customized, which precludes use of `--pod-network-cidr` other than ::/0 (which wouldn't work).
+AWS EC2 provides a /56 network for each VPC, which can be used as the basis for `--pod-network-cidr` but some cloud providers such as Hetzner and Digital Ocean provide a routable IPv6 network to each instance which is dynamically assigned at instance creation and cannot be customized, which precludes use of `--pod-network-cidr` other than ::/0 (which wouldn't work anyway).
 
 Wigglenet does not rely on a single contiguous pod network and it supports different ways of selecting the source per address family. This is controlled by `POD_CIDR_SOURCE_IPV4` and `POD_CIDR_SOURCE_IPV6` environment variables, which can take the following values:
 
@@ -81,9 +81,16 @@ Native routing is configured (`NATIVE_ROUTING_IPV4=1` / `NATIVE_ROUTING_IPV6=1`)
 
 ## Contributing
 
-Pull requests are welcome!
+Feedback, bug reports and pull requests are most welcome! Build and test with:
+
+```
+go mod download
+go build ./...
+go test ./...
+```
 
 See [Makefile](./Makefile) and [example manifests](./testing) for experimenting with Wigglenet locally using kind.
+
 
 ## Acknowledgements
 
