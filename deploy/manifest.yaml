@@ -90,7 +90,12 @@ spec:
           # The source of IPv4 subnets for node pod networks
           # ("none", "spec", "file")
         - name: POD_CIDR_SOURCE_IPV6
-          value: ""
+          value: "spec"
+
+          # The file from which to read the pod CIDRs if "file"
+          # mode is used
+        - name: POD_CIDR_SOURCE_PATH
+          value: "/etc/wigglenet/cidrs.txt"
 
           # Use native routing instead of the overlay network
           # for IPv6 traffic
