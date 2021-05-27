@@ -4,7 +4,7 @@ Wigglenet is a simple network plugin for Kubernetes geared towards dual-stack cl
 
 - Simplicity and minimalism
 - Support idiosyncratic IPv6 allocation strategies of various cloud providers (preferably without resorting to ULA addresses / NAT)
-- Being a viable network plugin for uncomplicated production clusters
+- Being a viable network plugin for small to medium sized production clusters
 
 Note that the last goal is not achieved yet. Wigglenet should be considered experimental and only used in non-critical clusters for the time being.
 
