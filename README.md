@@ -10,7 +10,7 @@ Note that the last goal is not achieved yet. Wigglenet should be considered expe
 
 ## Introduction
 
-Wigglenet uses the standard [`ptp`](https://www.cni.dev/plugins/current/main/ptp/) CNI plugins with [`host-local` IPAM](https://www.cni.dev/plugins/current/ipam/host-local/) to allocate IP addresses to pods based on the node subnets. Wigglenet also establishes an overlay network using [Wireguard](https://www.wireguard.com/). In addition to encapsulation, this also provides hassle-free encryption of pod-to-pod traffic.
+Wigglenet uses the standard [`ptp`](https://www.cni.dev/plugins/current/main/ptp/) CNI plugin with [`host-local` IPAM](https://www.cni.dev/plugins/current/ipam/host-local/) to allocate IP addresses to pods based on the node subnets. Wigglenet also establishes an overlay network using [Wireguard](https://www.wireguard.com/). In addition to encapsulation, this also provides hassle-free encryption of pod-to-pod traffic.
 
 Wigglenet runs as a daemonset on every node and does the following things:
 - Initializes each new node on startup, sets up the Wireguard interface and writes the CNI configuration
@@ -34,7 +34,7 @@ In the default configuration Wigglenet uses the networks specified in `.spec.pod
 
 This approach of having a single prefix for the whole cluster works in many cases well for IPv4 clusters, since pod networks almost always consist of RFC1918 addresses. In the case of IPv6, however, use of public addresses is generally preferred even for private networks. This presents a problem, since it can be hard to foresee what IPv6 network will be available to each node at the time of cluster creation.
 
-AWS EC2 provides a /56 network for each VPC, which can be used as the basis for `--pod-network-cidr` but some cloud providers such as Hetzner and Digital Ocean provide a routable IPv6 network to each instance which is dynamically assigned at instance creation and cannot be customized, which precludes use of `--pod-network-cidr` other than ::/0 (which wouldn't work anyway).
+AWS provides a /56 network for each VPC, which can be used as the basis for `--pod-network-cidr` but some cloud providers such as Hetzner and Digital Ocean provide a routable IPv6 network to each instance which is dynamically assigned at instance creation and cannot be customized, which precludes use of `--pod-network-cidr` other than ::/0 (which wouldn't work anyway).
 
 Wigglenet does not rely on a single contiguous pod network and it supports different ways of selecting the source per address family. This is controlled by `POD_CIDR_SOURCE_IPV4` and `POD_CIDR_SOURCE_IPV6` environment variables, which can take the following values:
 
