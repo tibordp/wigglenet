@@ -32,7 +32,7 @@ For customization and other configuration options see notes below and [the manif
 
 In the default configuration Wigglenet uses the networks specified in `.spec.podCIDRs` (or `.spec.podCIDR`) for each node. These CIDRs are allocated by kube-controller-manager from the cluster-wide pod network specified in the `--pod-network-cidr` in case cluster was provisioned with kubeadm. 
 
-This approach of having a single prefix for the whole cluster works in many cases well for IPv4 clusters, since pod networks almost always consist of RFC1918 addresses. In the case of IPv6, however, use of public addresses is generally preferred even for private networks. This presents a problem, since it can be hard to foresee what IPv6 network will be available to each node at the time of cluster creation.
+This approach of having a single prefix for the whole cluster works in many cases well for IPv4 clusters, since pod networks almost always consist of RFC1918 addresses. In the case of IPv6, however, use of public addresses is generally preferred even for private networks. This [presents a problem](https://github.com/kubernetes/kubernetes/issues/57130), since it can be hard to foresee what IPv6 network will be available to each node at the time of cluster creation.
 
 AWS provides a /56 network for each VPC, which can be used as the basis for `--pod-network-cidr` but some cloud providers such as Hetzner and Digital Ocean provide a routable IPv6 network to each instance which is dynamically assigned at instance creation and cannot be customized, which precludes use of `--pod-network-cidr` other than ::/0 (which wouldn't work anyway).
 
