@@ -63,8 +63,8 @@ type marker struct {
 	upper bool
 }
 
-// splitSubnets splits a range of IP addresses into aligned subnets
-func splitSubnets(start, stop ipBound) []net.IPNet {
+// splitCIDRs splits a range of IP addresses into aligned cidrs
+func splitCIDRs(start, stop ipBound) []net.IPNet {
 	results := make([]net.IPNet, 0)
 	for {
 		for j := 0; j < len(start.ip)*8; j++ {
@@ -87,12 +87,12 @@ func splitSubnets(start, stop ipBound) []net.IPNet {
 	return results
 }
 
-func summarizeSubnets(subnets []net.IPNet, ipv6 bool) []net.IPNet {
+func summarizeCIDRs(cidrs []net.IPNet, ipv6 bool) []net.IPNet {
 	markers := make([]marker, 0)
 	// convert IP networks into interval endpoints
-	for _, network := range subnets {
+	for _, network := range cidrs {
 		// Do not use .To4() check here. We specifically want to treat
-		// ::ffff:a.b.c.d/x as an IPv6 subnet.
+		// ::ffff:a.b.c.d/x as an IPv6 cidr.
 		if (len(network.IP) == net.IPv6len) == ipv6 {
 			markers = append(markers,
 				marker{
@@ -118,31 +118,31 @@ func summarizeSubnets(subnets []net.IPNet, ipv6 bool) []net.IPNet {
 
 	// calculate the union
 	results := make([]net.IPNet, 0)
-	var count int = 0
+	var depth int = 0
 	var start ipBound
 	for i := 0; i < len(markers); i++ {
-		if count == 0 {
+		if depth == 0 {
 			start = markers[i].bound
 		}
 		if markers[i].upper {
-			count -= 1
+			depth -= 1
 		} else {
-			count += 1
+			depth += 1
 		}
-		if count == 0 {
-			// turn the interval back into aligned subnets
-			results = append(results, splitSubnets(start, markers[i].bound)...)
+		if depth == 0 {
+			// turn the interval back into aligned cidrs
+			results = append(results, splitCIDRs(start, markers[i].bound)...)
 		}
 	}
 
 	return results
 }
 
-// SummarizeSubnets computes the union of subnets by collapsing adjecent subnets into
-// ones with a shorter prefix and removes overlapping subnets.
-func SummarizeSubnets(subnets []net.IPNet) []net.IPNet {
+// SummarizeCIDRs computes the union of CIDRs by collapsing adjecent ones into
+// a CIDR with a shorter prefix and removes overlapping ones.
+func SummarizeCIDRs(cidrs []net.IPNet) []net.IPNet {
 	results := make([]net.IPNet, 0)
-	results = append(results, summarizeSubnets(subnets, true)...)
-	results = append(results, summarizeSubnets(subnets, false)...)
+	results = append(results, summarizeCIDRs(cidrs, true)...)
+	results = append(results, summarizeCIDRs(cidrs, false)...)
 	return results
 }

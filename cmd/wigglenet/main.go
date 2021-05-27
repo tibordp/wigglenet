@@ -17,7 +17,7 @@ func main() {
 	flag.StringVar(&master, "master", "", "master url")
 	flag.Parse()
 
-	wigglenet, err := internal.NewWigglenet(master, kubeconfig)
+	wigglenet, err := internal.New(master, kubeconfig)
 	if err != nil {
 		klog.Fatal(err)
 	}

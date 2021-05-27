@@ -33,7 +33,7 @@ func (wg *wireguardLink) Type() string {
 	return "wireguard"
 }
 
-type WireguardManager interface {
+type Manager interface {
 	ApplyConfiguration(config *WireguardConfig) error
 	PublicKey() []byte
 }
@@ -82,7 +82,7 @@ func (c *wireguardManager) PublicKey() []byte {
 	return c.publicKey[:]
 }
 
-func getPeerSubnets(peers []Peer) []net.IPNet {
+func getPeerCIDRs(peers []Peer) []net.IPNet {
 	routes := make([]net.IPNet, 0)
 	for _, peer := range peers {
 		for _, cidr := range peer.PodCIDRs {
@@ -92,10 +92,10 @@ func getPeerSubnets(peers []Peer) []net.IPNet {
 			}
 		}
 	}
-	return util.SummarizeSubnets(routes)
+	return util.SummarizeCIDRs(routes)
 }
 
-func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersSubnets []net.IPNet) error {
+func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersCIDRs []net.IPNet) error {
 	// Find all directly attached routes to the wireguard interface
 	existingRoutes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, &netlink.Route{LinkIndex: c.link.Attrs().Index}, netlink.RT_FILTER_OIF)
 	if err != nil {
@@ -108,7 +108,7 @@ func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersSubnets []ne
 	}
 
 	missing := make([]netlink.Route, 0)
-	for _, cidr := range peersSubnets {
+	for _, cidr := range peersCIDRs {
 		if _, ok := redundant[cidr.String()]; ok {
 			delete(redundant, cidr.String())
 		} else {
@@ -126,7 +126,7 @@ func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersSubnets []ne
 	// until a veth is attached. This is weird and for IPv4 it's not needed,
 	// but the ptp plugin does it too, so I guess it's necessary.
 	for _, address := range addresses {
-		cidr := util.SingleHostSubnet(address)
+		cidr := util.SingleHostCIDR(address)
 		if _, ok := redundant[cidr.String()]; ok {
 			delete(redundant, cidr.String())
 		} else {
@@ -170,7 +170,7 @@ func (c *wireguardManager) reconcileAddresses(addresses []net.IP) error {
 	missing := make([]netlink.Addr, 0)
 	for _, desiredAddr := range addresses {
 		desiredAddr := desiredAddr
-		ipNet := util.SingleHostSubnet(desiredAddr)
+		ipNet := util.SingleHostCIDR(desiredAddr)
 		if _, ok := redundant[ipNet.String()]; ok {
 			delete(redundant, ipNet.String())
 		} else {
@@ -244,8 +244,8 @@ func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
 		return err
 	}
 
-	peersSubnets := getPeerSubnets(config.Peers)
-	if err := c.reconcileRoutes(config.Addresses, peersSubnets); err != nil {
+	peersCIDRs := getPeerCIDRs(config.Peers)
+	if err := c.reconcileRoutes(config.Addresses, peersCIDRs); err != nil {
 		return err
 	}
 
@@ -320,7 +320,7 @@ func ensurePrivateKey() (*wgtypes.Key, error) {
 	return &privateKey, nil
 }
 
-func NewWireguardManager() (WireguardManager, error) {
+func NewManager() (Manager, error) {
 	privateKey, err := ensurePrivateKey()
 	if err != nil {
 		return nil, err

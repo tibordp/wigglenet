@@ -34,7 +34,7 @@ type FirewallConfig struct {
 }
 
 func NewConfig(podCIDRs []net.IPNet) FirewallConfig {
-	aggregated := util.SummarizeSubnets(podCIDRs)
+	aggregated := util.SummarizeCIDRs(podCIDRs)
 	config := FirewallConfig{
 		PodCIDRs: aggregated,
 	}
@@ -49,11 +49,11 @@ type firewallManager struct {
 	firewallConfig FirewallConfig
 }
 
-type FirewallManager interface {
+type Manager interface {
 	Run(stop chan struct{})
 }
 
-func New(updates chan FirewallConfig) FirewallManager {
+func New(updates chan FirewallConfig) Manager {
 	exec := exec.New()
 	ip6tables := ipt.New(exec, ipt.ProtocolIPv6)
 	ip4tables := ipt.New(exec, ipt.ProtocolIPv4)

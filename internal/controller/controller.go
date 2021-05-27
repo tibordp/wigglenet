@@ -35,12 +35,12 @@ type controller struct {
 	indexer         cache.Indexer
 	queue           workqueue.RateLimitingInterface
 	informer        cache.Controller
-	wireguard       wireguard.WireguardManager
+	wireguard       wireguard.Manager
 	cniwriter       cni.CNIConfigWriter
 	firewallUpdates chan firewall.FirewallConfig
 }
 
-func NewController(clientset kubernetes.Interface, wireguardManager wireguard.WireguardManager, cniwriter cni.CNIConfigWriter, firewallUpdates chan firewall.FirewallConfig) *controller {
+func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, firewallUpdates chan firewall.FirewallConfig) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
@@ -103,7 +103,7 @@ func (c *controller) applyFirewallRules() error {
 
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
-			podCIDRs = append(podCIDRs, util.GetPodCIDRs(node)...)
+			podCIDRs = append(podCIDRs, util.GetPodCIDRsFromAnnotation(node)...)
 		}
 	}
 
@@ -121,7 +121,7 @@ func (c *controller) applyWireguardConfiguration() error {
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
 			if node.Name == config.CurrentNodeName {
-				podCIDRs := util.GetPodCIDRs(node)
+				podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 				localAddresses = util.GetPodNetworkLocalAddresses(podCIDRs)
 			} else {
 				peer := makePeer(node)
@@ -137,13 +137,12 @@ func (c *controller) applyWireguardConfiguration() error {
 }
 
 // ensureCNI writes the local CNI configuration to /etc/cni/net.d if there were
-// relevant changes. The config will run only once on startup as .spec.podCIDRs
-// cannot be changed once set, but to keep things simple, it runs on all changes
-// to the node we are running on.
+// relevant changes to pod CIDRs. This can change during the lifetime of the node,
+// e.g. if another address family is added to an existing cluster.
 func (c *controller) ensureCNI() error {
 	item, exists, _ := c.indexer.GetByKey(config.CurrentNodeName)
 	if node, ok := item.(*v1.Node); exists && ok {
-		podCIDRs := util.GetPodCIDRs(node)
+		podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 
 		if len(podCIDRs) == 0 {
 			klog.Infof("node %v does not have PodCIDRs assigned yet", node.Name)
@@ -161,15 +160,16 @@ func (c *controller) ensureCNI() error {
 }
 
 func makePeer(node *v1.Node) *wireguard.Peer {
-	podCIDRs := util.GetPodCIDRs(node)
-
-	if len(node.Spec.PodCIDRs) == 0 {
-		klog.Infof("node %v does not have PodCIDRs assigned yet", node.Name)
+	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
+	if publicKeyStr == "" {
+		// If we return here, the node is simply not initialized yet, which is normal,
+		// so we don't log anything.
 		return nil
 	}
 
-	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
-	if publicKeyStr == "" {
+	podCIDRs := util.GetPodCIDRsFromAnnotation(node)
+	if len(podCIDRs) == 0 {
+		klog.Warningf("node %v does not have PodCIDRs assigned yet", node.Name)
 		return nil
 	}
 
@@ -191,7 +191,7 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		if nodeAddresses == nil {
 			return nil
 		}
-		nodeCidrs = append(nodeCidrs, util.SingleHostSubnet(nodeAddress))
+		nodeCidrs = append(nodeCidrs, util.SingleHostCIDR(nodeAddress))
 	}
 
 	peerEndpoint := util.SelectIP(nodeAddresses, config.WireguardIPFamily)

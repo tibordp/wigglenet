@@ -15,7 +15,7 @@ type Wigglenet interface {
 	Run()
 }
 
-func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
+func New(master, kubeconfig string) (Wigglenet, error) {
 	// creates the connection
 	kubeconf, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
 	if err != nil {
@@ -37,7 +37,7 @@ func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
 		cniwriter := cni.NewCNIConfigWriter()
 		ctrl = controller.NewController(clientset, nil, cniwriter, firewallUpdates)
 	} else {
-		wireguard, err := wireguard.NewWireguardManager()
+		wireguard, err := wireguard.NewManager()
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +58,7 @@ func NewWigglenet(master, kubeconfig string) (Wigglenet, error) {
 
 type wigglenet struct {
 	controller      controller.Controller
-	firewallManager firewall.FirewallManager
+	firewallManager firewall.Manager
 }
 
 func (c *wigglenet) Run() {

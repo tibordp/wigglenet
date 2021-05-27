@@ -4,12 +4,13 @@ import (
 	"net"
 	"strings"
 
+	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/config"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
 
-func SingleHostSubnet(ip net.IP) net.IPNet {
+func SingleHostCIDR(ip net.IP) net.IPNet {
 	canonical := Canonicalize(ip)
 	return net.IPNet{
 		IP:   canonical,
@@ -17,8 +18,9 @@ func SingleHostSubnet(ip net.IP) net.IPNet {
 	}
 }
 
-func GetPodCIDRs(node *v1.Node) []net.IPNet {
+func GetPodCIDRsFromSpec(node *v1.Node) []net.IPNet {
 	cidrs := make([]net.IPNet, 0, len(node.Spec.PodCIDRs))
+
 	if len(node.Spec.PodCIDRs) == 0 && node.Spec.PodCIDR != "" {
 		if _, route, err := net.ParseCIDR(node.Spec.PodCIDR); err == nil && route != nil {
 			cidrs = append(cidrs, *route)
@@ -33,6 +35,16 @@ func GetPodCIDRs(node *v1.Node) []net.IPNet {
 				klog.Warningf("invalid CIDR prefix for node %v: %v", node.Name, v)
 			}
 		}
+	}
+
+	return cidrs
+}
+
+func GetPodCIDRsFromAnnotation(node *v1.Node) []net.IPNet {
+	annotationValue := node.Annotations[annotation.PodCidrsAnnotation]
+	cidrs, err := annotation.UnmarshalPodCidrs(annotationValue)
+	if err != nil {
+		return []net.IPNet{}
 	}
 
 	return cidrs

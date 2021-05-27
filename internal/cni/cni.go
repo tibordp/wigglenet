@@ -112,10 +112,10 @@ func writeCNIConfig(w io.Writer, data CNIConfig) error {
 	}
 
 	ranges := make([]RangeSet, 0)
-	for _, subnet := range data.PodCIDRs {
+	for _, cidr := range data.PodCIDRs {
 		ranges = append(ranges, RangeSet{
 			Range{
-				Subnet: cniTypes.IPNet(subnet),
+				Subnet: cniTypes.IPNet(cidr),
 			},
 		})
 	}

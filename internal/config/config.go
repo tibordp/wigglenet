@@ -5,6 +5,14 @@ import (
 	"strconv"
 )
 
+type PodCIDRSource string
+
+const (
+	SourceNone PodCIDRSource = "none"
+	SourceSpec PodCIDRSource = "spec"
+	SourceFile PodCIDRSource = "file"
+)
+
 type IPFamily string
 
 const (
@@ -46,6 +54,13 @@ var (
 	NativeRoutingIPv4 bool = GetEnvOrDefaultBool("NATIVE_ROUTING_IPV4", false)
 
 	NativeRouting = NativeRoutingIPv4 && NativeRoutingIPv6 // Completely disable Wireguard functionality if both are set
+
+	// Where to take the node's pod CIDRs from per address family
+	PodCIDRSourceIPv4 PodCIDRSource = PodCIDRSource(GetEnvOrDefault("POD_CIDR_SOURCE_IPV4", string(SourceSpec)))
+	PodCIDRSourceIPv6 PodCIDRSource = PodCIDRSource(GetEnvOrDefault("POD_CIDR_SOURCE_IPV6", string(SourceSpec)))
+
+	// Where to take the pod CIDRs from, if mode is "file"
+	PodCidrSourceFilename string = os.Getenv("POD_CIDR_SOURCE_PATH")
 )
 
 func GetEnvOrDefault(name string, fallback string) string {

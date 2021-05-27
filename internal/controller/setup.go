@@ -1,23 +1,124 @@
 package controller
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/util"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/client-go/util/retry"
 
+	klog "k8s.io/klog/v2"
+
 	clientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
-// SetupNode sets up the node annotations (node IP and Wireguard public key) on first start.
+func setNodeAddressesAnnotation(node *v1.Node) error {
+	// Determine all the node IP addresses
+	statusAddresses := util.GetNodeAddresses(node)
+	interfaceAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
+	if err != nil {
+		return err
+	}
+
+	keys := make(map[string]struct{})
+	nodeAddresses := make([]net.IP, 0)
+
+	// Remove duplicates
+	for _, coll := range [][]net.IP{statusAddresses, interfaceAddresses} {
+		for _, entry := range coll {
+			if _, value := keys[entry.String()]; !value {
+				keys[entry.String()] = struct{}{}
+				nodeAddresses = append(nodeAddresses, entry)
+			}
+		}
+	}
+
+	if len(nodeAddresses) == 0 {
+		return fmt.Errorf("could not determine node ip")
+	}
+
+	val, _ := json.Marshal(nodeAddresses)
+	node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation] = string(val)
+
+	return nil
+}
+
+func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]net.IPNet, error) {
+	podsCidrs := make([]net.IPNet, 0)
+
+	switch source {
+	case config.SourceNone:
+		return podsCidrs, nil
+
+	case config.SourceFile:
+		file, err := os.Open(config.PodCidrSourceFilename)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			if _, cidr, err := net.ParseCIDR(scanner.Text()); err == nil && cidr != nil {
+				if (cidr.IP.To4() == nil) == ipv6 {
+					podsCidrs = append(podsCidrs, *cidr)
+				}
+			} else {
+				klog.Info("unrecognized '%v' in %v skipping", scanner.Text(), config.PodCidrSourceFilename)
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+	case config.SourceSpec:
+		specPodCidrs := util.GetPodCIDRsFromSpec(node)
+		for _, cidr := range specPodCidrs {
+			if (cidr.IP.To4() == nil) == ipv6 {
+				podsCidrs = append(podsCidrs, cidr)
+			}
+		}
+	}
+
+	// Return an error if we want to have this address family in the cluster but weren't able
+	// to find an acceptable CIDR
+	if len(podsCidrs) == 0 {
+		return nil, fmt.Errorf(".spec.podCIDRs does not have a CIDR for ipv6=%v", ipv6)
+	}
+
+	return podsCidrs, nil
+}
+
+func setPodCidrsAnnotation(node *v1.Node) error {
+	// Simple logic for now, always take pod cidrs from .spec.podCIDRs
+	podCidrs := make([]net.IPNet, 0)
+	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv6, true); err != nil {
+		return err
+	} else {
+		podCidrs = append(podCidrs, cidrs...)
+	}
+
+	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv4, false); err != nil {
+		return err
+	} else {
+		podCidrs = append(podCidrs, cidrs...)
+	}
+	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(podCidrs)
+
+	return nil
+}
+
+// SetupNode sets up the node annotations on each start.
 func SetupNode(nodeClient clientv1.NodeInterface, publicKey []byte) error {
 	context := context.Background()
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -28,32 +129,13 @@ func SetupNode(nodeClient clientv1.NodeInterface, publicKey []byte) error {
 
 		node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
 
-		// Determine all the node IP addresses
-		statusAddresses := util.GetNodeAddresses(node)
-		interfaceAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
-		if err != nil {
+		if err := setNodeAddressesAnnotation(node); err != nil {
 			return err
 		}
 
-		keys := make(map[string]struct{})
-		nodeAddresses := make([]net.IP, 0)
-
-		// Remove duplicates
-		for _, coll := range [][]net.IP{statusAddresses, interfaceAddresses} {
-			for _, entry := range coll {
-				if _, value := keys[entry.String()]; !value {
-					keys[entry.String()] = struct{}{}
-					nodeAddresses = append(nodeAddresses, entry)
-				}
-			}
+		if err := setPodCidrsAnnotation(node); err != nil {
+			return err
 		}
-
-		if len(nodeAddresses) == 0 {
-			return fmt.Errorf("could not determine node ip")
-		}
-
-		val, _ := json.Marshal(nodeAddresses)
-		node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation] = string(val)
 
 		_, err = nodeClient.Update(context, node, metav1.UpdateOptions{})
 		return err
