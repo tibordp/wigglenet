@@ -64,7 +64,7 @@ func (c *WireguardConfig) canonicalize() {
 	// Sort the peers so that the slice of peers will not change
 	// under deep comparison.
 	sort.Slice(c.Addresses, func(i, j int) bool {
-		return bytes.Compare(c.Addresses[i], c.Addresses[j]) < 0
+		return util.IPCompare(c.Addresses[i], c.Addresses[j]) < 0
 	})
 	sort.Slice(c.Peers, func(i, j int) bool {
 		return bytes.Compare(c.Peers[i].PublicKey, c.Peers[j].PublicKey) < 0
@@ -286,6 +286,7 @@ func ensurePrivateKey() (*wgtypes.Key, error) {
 			return nil, err
 		}
 
+		// Private key should only be readable by root
 		file, err = os.OpenFile(config.PrivateKeyFilename, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
 		if err != nil {
 			return nil, err
