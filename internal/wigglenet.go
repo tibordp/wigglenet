@@ -33,6 +33,8 @@ func New(ctx context.Context) (Wigglenet, error) {
 	firewallManager := firewall.New(firewallUpdates)
 
 	var ctrl controller.Controller
+	var publicKey []byte
+
 	if config.FirewallOnly {
 		ctrl = controller.NewController(clientset, nil, nil, firewallUpdates)
 	} else if config.NativeRouting {
@@ -44,12 +46,14 @@ func New(ctx context.Context) (Wigglenet, error) {
 			return nil, err
 		}
 
-		if err = controller.SetupNode(ctx, clientset.CoreV1().Nodes(), wireguard.PublicKey()); err != nil {
-			return nil, err
-		}
-
 		cniwriter := cni.NewCNIConfigWriter()
 		ctrl = controller.NewController(clientset, wireguard, cniwriter, firewallUpdates)
+		publicKey = wireguard.PublicKey()
+	}
+
+	// Populate the node annotations
+	if err = controller.SetupNode(ctx, clientset.CoreV1().Nodes(), publicKey); err != nil {
+		return nil, err
 	}
 
 	return &wigglenet{

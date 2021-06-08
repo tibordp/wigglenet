@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/config"
@@ -46,6 +47,10 @@ func setNodeAddressesAnnotation(node *v1.Node) error {
 	if len(nodeAddresses) == 0 {
 		return fmt.Errorf("could not determine node ip")
 	}
+
+	sort.Slice(nodeAddresses, func(i, j int) bool {
+		return util.IPCompare(nodeAddresses[i], nodeAddresses[j]) < 0
+	})
 
 	val, _ := json.Marshal(nodeAddresses)
 	node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation] = string(val)
@@ -88,6 +93,8 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 				podsCidrs = append(podsCidrs, cidr)
 			}
 		}
+	default:
+		return nil, fmt.Errorf("invalid pod CIDR source %v", source)
 	}
 
 	// Return an error if we want to have this address family in the cluster but weren't able
@@ -112,6 +119,8 @@ func setPodCidrsAnnotation(node *v1.Node) error {
 	} else {
 		podCidrs = append(podCidrs, cidrs...)
 	}
+
+	podCidrs = util.SummarizeCIDRs(podCidrs)
 	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(podCidrs)
 
 	return nil
@@ -125,7 +134,9 @@ func SetupNode(ctx context.Context, nodeClient clientv1.NodeInterface, publicKey
 			return err
 		}
 
-		node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
+		if publicKey != nil {
+			node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
+		}
 
 		if err := setNodeAddressesAnnotation(node); err != nil {
 			return err

@@ -1,7 +1,7 @@
 # This makefile just has useful shortcuts for testing locally with kind. If you want to build the 
 # project itself, do so via the go toolchain or Dockerfile.
 
-.PHONY: image kind-default kind-no-podcidr kind-v4-only patch-ipv6-cidr deploy restart logsk
+.PHONY: image kind-default kind-no-podcidr kind-v4-only patch-ipv6-cidr deploy restart logs
 
 kind-default:
 	kind create cluster --config testing/cluster.yaml
@@ -12,12 +12,18 @@ kind-no-podcidr:
 kind-v4-only:
 	kind create cluster --config testing/cluster_v4_only.yaml
 
+kind-v6-singlestack:
+	kind create cluster --config testing/cluster_v6_singlestack.yaml
+
 image: 
 	docker build -t wigglenet .
 	kind load docker-image wigglenet
 
+# Patch manifest to use local Docker image instead of one from Dockerhub
 deploy:
-	kubectl --context=kind-kind apply -f ./testing/manifest.yaml
+	sed 's\tibordp/wigglenet:.*\wigglenet\g' ./deploy/manifest.yaml \
+		| sed 's/Always/Never/g' \
+		| kubectl --context=kind-kind apply -f -
 
 restart:
 	kubectl --context=kind-kind delete pod -n kube-system -l app=wigglenet

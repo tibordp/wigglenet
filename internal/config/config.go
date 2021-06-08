@@ -18,7 +18,7 @@ type IPFamily string
 const (
 	IPv4Family      IPFamily = "ipv4"
 	IPv6Family      IPFamily = "ipv6"
-	DualStackFamily IPFamily = "dual"
+	DualStackFamily IPFamily = "dualstack"
 )
 
 var (
@@ -30,7 +30,7 @@ var (
 	PrivateKeyFilename string = GetEnvOrDefault("WIGGLENET_PRIVKEY_PATH", "/etc/wigglenet/private.key")
 
 	// Which IP family to use for the tunnel (relevant for dual-stack clusters)
-	WireguardIPFamily IPFamily = IPFamily(GetEnvOrDefault("WG_IP_FAMILY", "dual"))
+	WireguardIPFamily IPFamily = IPFamily(GetEnvOrDefault("WG_IP_FAMILY", "dualstack"))
 
 	// CNI settings
 	CniConfigPath string = GetEnvOrDefault("CNI_CONFIG_PATH", "/etc/cni/net.d/10-wigglenet.conflist")

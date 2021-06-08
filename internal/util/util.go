@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"net"
 	"strings"
 
@@ -126,6 +127,26 @@ func GetInterfaceIPs(ifaces string) ([]net.IP, error) {
 		}
 	}
 	return ipAddresses, nil
+}
+
+func IPCompare(a, b net.IP) int {
+	aV4 := a.To4()
+	bV4 := b.To4()
+
+	if (aV4 != nil) != (bV4 != nil) {
+		if aV4 != nil {
+			return 1
+		} else {
+			return -1
+		}
+	}
+
+	if aV4 != nil {
+		// Make sure that ::ffff:a.b.c.d compares equal to a.b.c.d
+		return bytes.Compare(aV4, bV4)
+	} else {
+		return bytes.Compare(a, b)
+	}
 }
 
 func GetNodeAddresses(node *v1.Node) []net.IP {
