@@ -4,6 +4,7 @@ import (
 	"net"
 	"testing"
 
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,7 +38,7 @@ func TestMakePeer2(t *testing.T) {
 			parseCIDR("2001:db8::/64"),
 			parseCIDR("10.0.0.0/24"),
 		},
-		PublicKey: []uint8{
+		PublicKey: wgtypes.Key{
 			0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 			11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 			21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
