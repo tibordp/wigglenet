@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -174,8 +173,8 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
-	publicKey, err := base64.StdEncoding.DecodeString(publicKeyStr)
-	if err != nil || len(publicKey) != wgtypes.KeyLen {
+	publicKey, err := wgtypes.ParseKey(publicKeyStr)
+	if err != nil {
 		klog.Warningf("invalid public key for node %v", node.Name)
 		return nil
 	}

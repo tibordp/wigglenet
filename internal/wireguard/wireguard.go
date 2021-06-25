@@ -67,7 +67,7 @@ func (c *WireguardConfig) canonicalize() {
 		return util.IPCompare(c.Addresses[i], c.Addresses[j]) < 0
 	})
 	sort.Slice(c.Peers, func(i, j int) bool {
-		return bytes.Compare(c.Peers[i].PublicKey, c.Peers[j].PublicKey) < 0
+		return bytes.Compare(c.Peers[i].PublicKey[:], c.Peers[j].PublicKey[:]) < 0
 	})
 }
 
@@ -75,7 +75,7 @@ type Peer struct {
 	Endpoint  net.IP
 	NodeCIDRs []net.IPNet
 	PodCIDRs  []net.IPNet
-	PublicKey []byte
+	PublicKey wgtypes.Key
 }
 
 func (c *wireguardManager) PublicKey() []byte {
@@ -197,33 +197,99 @@ func (c *wireguardManager) reconcileAddresses(addresses []net.IP) error {
 	return nil
 }
 
-func (c *wireguardManager) applyPeerConfiguration(peers []Peer) error {
-	peerConfigs := make([]wgtypes.PeerConfig, len(peers))
-	for i, v := range peers {
-		peerConfigs[i].AllowedIPs = v.PodCIDRs
-		// Node CIDRs are allowed source of traffic via the tunnel, but traffic is not
-		// routed through the tunnel if it is destined to an external node IP. This is to
-		// allow return traffic to reach the pod when a pod contacted another node via its
-		// public address (e.g. a controller talking to apiserver). Routing node-to-node
-		// traffic through the tunnel is much more tricky as we can cause routing loops if
-		// not careful.
-		// https://www.wireguard.com/netns/#routing-all-your-traffic
-		peerConfigs[i].AllowedIPs = append(peerConfigs[i].AllowedIPs, v.NodeCIDRs...)
-		peerConfigs[i].Endpoint = &net.UDPAddr{IP: v.Endpoint, Port: config.WGPort}
-		key, err := wgtypes.NewKey(v.PublicKey)
-		if err != nil {
-			return err
-		}
-		peerConfigs[i].PublicKey = key
+func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
+	if len(existingPeer.AllowedIPs) != len(peer.NodeCIDRs)+len(peer.PodCIDRs) {
+		return true
 	}
 
-	if err := c.wgctrl.ConfigureDevice(config.WGLinkName, wgtypes.Config{
-		PrivateKey:   &c.privateKey,
-		ListenPort:   &config.WGPort,
-		ReplacePeers: true,
-		Peers:        peerConfigs,
-	}); err != nil {
+	for i := range peer.PodCIDRs {
+		if existingPeer.AllowedIPs[i].String() != peer.PodCIDRs[i].String() {
+			return true
+		}
+	}
+
+	for i := range peer.NodeCIDRs {
+		if existingPeer.AllowedIPs[len(peer.PodCIDRs)+i].String() != peer.NodeCIDRs[i].String() {
+			return true
+		}
+	}
+
+	if existingPeer.Endpoint == nil {
+		return true
+	}
+
+	if !existingPeer.Endpoint.IP.Equal(peer.Endpoint) || existingPeer.Endpoint.Port != config.WGPort {
+		return true
+	}
+
+	return false
+}
+
+func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
+	changeset := make(map[string]wgtypes.PeerConfig)
+	for _, peer := range existingPeers {
+		changeset[peer.PublicKey.String()] = wgtypes.PeerConfig{
+			PublicKey:         peer.PublicKey,
+			Remove:            true,
+			AllowedIPs:        peer.AllowedIPs,
+			Endpoint:          peer.Endpoint,
+			ReplaceAllowedIPs: true,
+		}
+	}
+
+	for _, peer := range desiredPeers {
+		var peerConfig wgtypes.PeerConfig
+		var ok bool
+		if peerConfig, ok = changeset[peer.PublicKey.String()]; ok {
+			if !peerNeedsUpdate(&peerConfig, &peer) {
+				delete(changeset, peer.PublicKey.String())
+				continue
+			}
+			peerConfig.Remove = false
+			peerConfig.UpdateOnly = true
+		} else {
+			peerConfig = wgtypes.PeerConfig{}
+		}
+
+		peerConfig.PublicKey = peer.PublicKey
+		peerConfig.Endpoint = &net.UDPAddr{IP: peer.Endpoint, Port: config.WGPort}
+		peerConfig.AllowedIPs = peer.PodCIDRs
+		peerConfig.AllowedIPs = append(peerConfig.AllowedIPs, peer.NodeCIDRs...)
+
+		changeset[peer.PublicKey.String()] = peerConfig
+	}
+
+	peerConfigs := make([]wgtypes.PeerConfig, 0)
+	for _, v := range changeset {
+		if v.Remove {
+			klog.Infof("removing peer %v", v.PublicKey.String())
+		} else if v.UpdateOnly {
+			klog.Infof("updating peer %v", v.PublicKey.String())
+		} else {
+			klog.Infof("adding peer %v", v.PublicKey.String())
+		}
+		peerConfigs = append(peerConfigs, v)
+	}
+
+	return peerConfigs
+}
+
+func (c *wireguardManager) reconcileWireguardPeers(peers []Peer) error {
+	device, err := c.wgctrl.Device(c.link.Attrs().Name)
+	if err != nil {
 		return err
+	}
+
+	peerConfigs := createPeerChangeset(device.Peers, peers)
+
+	if len(peerConfigs) > 0 {
+		if err := c.wgctrl.ConfigureDevice(device.Name, wgtypes.Config{
+			PrivateKey: &c.privateKey,
+			ListenPort: &config.WGPort,
+			Peers:      peerConfigs,
+		}); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -235,8 +301,7 @@ func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
 	}
 
 	klog.Infof("applying new Wireguard configuration")
-
-	if err := c.applyPeerConfiguration(config.Peers); err != nil {
+	if err := c.reconcileWireguardPeers(config.Peers); err != nil {
 		return err
 	}
 
