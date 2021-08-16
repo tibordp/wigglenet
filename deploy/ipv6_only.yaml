@@ -55,7 +55,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
       - name: wigglenet
-        image: tibordp/wigglenet:0.2.2
+        image: tibordp/wigglenet:0.2.3
         imagePullPolicy: Always
         env:
           # Masquerade outgoing IPv4 traffic not destined
@@ -78,7 +78,7 @@ spec:
         - name: FILTER_IPV6
           value: "0" 
 
-          # Optional interface from which to take the node's
+          # Aditional interfaces from which to take the node's
           # host IP address (default: none)
         - name: NODE_IP_INTERFACES
           value: ""
