@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"sort"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/config"
@@ -24,33 +23,10 @@ import (
 )
 
 func setNodeAddressesAnnotation(node *v1.Node) error {
-	// Determine all the node IP addresses
-	statusAddresses := util.GetNodeAddresses(node)
-	interfaceAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
+	nodeAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
 	if err != nil {
 		return err
 	}
-
-	keys := make(map[string]struct{})
-	nodeAddresses := make([]net.IP, 0)
-
-	// Remove duplicates
-	for _, coll := range [][]net.IP{statusAddresses, interfaceAddresses} {
-		for _, entry := range coll {
-			if _, value := keys[entry.String()]; !value {
-				keys[entry.String()] = struct{}{}
-				nodeAddresses = append(nodeAddresses, entry)
-			}
-		}
-	}
-
-	if len(nodeAddresses) == 0 {
-		return fmt.Errorf("could not determine node ip")
-	}
-
-	sort.Slice(nodeAddresses, func(i, j int) bool {
-		return util.IPCompare(nodeAddresses[i], nodeAddresses[j]) < 0
-	})
 
 	val, _ := json.Marshal(nodeAddresses)
 	node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation] = string(val)

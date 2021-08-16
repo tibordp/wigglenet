@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
@@ -159,6 +160,39 @@ func (c *controller) ensureCNI() error {
 	return nil
 }
 
+func getNodeAddresses(node *v1.Node) ([]net.IP, error) {
+	var annotationAddresses []net.IP
+	err := json.Unmarshal([]byte(node.Annotations[annotation.NodeIpsAnnotation]), &annotationAddresses)
+	if annotationAddresses == nil || err != nil {
+		klog.Warningf("invalid node-ips %v", node.Annotations[annotation.NodeIpsAnnotation])
+		return nil, err
+	}
+
+	statusAddresses := util.GetNodeAddresses(node)
+
+	keys := make(map[string]struct{})
+	nodeAddresses := make([]net.IP, 0)
+
+	for _, coll := range [][]net.IP{statusAddresses, annotationAddresses} {
+		if coll == nil {
+			continue
+		}
+
+		for _, entry := range coll {
+			if _, value := keys[entry.String()]; !value {
+				keys[entry.String()] = struct{}{}
+				nodeAddresses = append(nodeAddresses, entry)
+			}
+		}
+	}
+
+	sort.Slice(nodeAddresses, func(i, j int) bool {
+		return util.IPCompare(nodeAddresses[i], nodeAddresses[j]) < 0
+	})
+
+	return nodeAddresses, nil
+}
+
 func makePeer(node *v1.Node) *wireguard.Peer {
 	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
 	if publicKeyStr == "" {
@@ -179,10 +213,9 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
-	var nodeAddresses []net.IP
-	err = json.Unmarshal([]byte(node.Annotations[annotation.NodeIpsAnnotation]), &nodeAddresses)
-	if nodeAddresses == nil || err != nil {
-		klog.Warningf("invalid node-ips %v", node.Annotations[annotation.NodeIpsAnnotation])
+	nodeAddresses, err := getNodeAddresses(node)
+	if err != nil || len(nodeAddresses) == 0 {
+		klog.Warningf("could not determine node addresses for %v", node.Name)
 		return nil
 	}
 
