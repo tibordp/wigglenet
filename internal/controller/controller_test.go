@@ -22,17 +22,26 @@ func TestMakePeer2(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-				"wigglenet/node-ips":   `["192.168.0.1","2001:db8::1234"]`,
+				"wigglenet/node-ips":   `["192.168.0.1", "2001:db8::1234"]`,
 				"wigglenet/pod-cidrs":  `["2001:db8::/64","10.0.0.0/24"]`,
+			},
+		},
+		Status: v1.NodeStatus{
+			Addresses: []v1.NodeAddress{
+				{
+					Type:    v1.NodeInternalIP,
+					Address: "10.0.0.1",
+				},
 			},
 		},
 	})
 
 	expected := wireguard.Peer{
-		Endpoint: net.ParseIP("192.168.0.1"),
+		Endpoint: net.ParseIP("2001:db8::1234"),
 		NodeCIDRs: []net.IPNet{
-			parseCIDR("192.168.0.1/32"),
 			parseCIDR("2001:db8::1234/128"),
+			parseCIDR("10.0.0.1/32"),
+			parseCIDR("192.168.0.1/32"),
 		},
 		PodCIDRs: []net.IPNet{
 			parseCIDR("2001:db8::/64"),
@@ -47,6 +56,23 @@ func TestMakePeer2(t *testing.T) {
 	}
 
 	assert.Equal(t, &expected, &result)
+}
+
+func TestMakePeerNoAddresses(t *testing.T) {
+	result := makePeer(&v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+				"wigglenet/node-ips":   `[]`,
+				"wigglenet/pod-cidrs":  `["2001:db8::/64","10.0.0.0/24"]`,
+			},
+		},
+		Status: v1.NodeStatus{
+			Addresses: []v1.NodeAddress{},
+		},
+	})
+
+	assert.Nil(t, result)
 }
 
 func TestMakePeerInvalid(t *testing.T) {
