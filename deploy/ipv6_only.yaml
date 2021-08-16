@@ -52,6 +52,7 @@ spec:
       tolerations:
       - operator: Exists
       serviceAccountName: wigglenet
+      priorityClassName: system-node-critical
       containers:
       - name: wigglenet
         image: tibordp/wigglenet:0.2.2
