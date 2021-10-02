@@ -1,4 +1,4 @@
-FROM golang:1.16 AS builder
+FROM golang:1.17 AS builder
 
 # enable Go modules support
 ENV GO111MODULE=on
@@ -17,7 +17,7 @@ COPY internal internal
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
     /wigglenetd ./cmd/wigglenet
 
-FROM alpine:3.13
+FROM alpine:3.14
 RUN apk --no-cache add ca-certificates bash iptables ip6tables
 COPY --from=builder /wigglenetd /bin
 ENTRYPOINT ["/bin/wigglenetd"]
