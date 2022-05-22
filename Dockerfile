@@ -17,7 +17,13 @@ COPY internal internal
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
     /wigglenetd ./cmd/wigglenet
 
-FROM alpine:3.14
+FROM alpine:3.15
 RUN apk --no-cache add ca-certificates bash iptables ip6tables
+ADD https://raw.githubusercontent.com/kubernetes-sigs/iptables-wrappers/master/iptables-wrapper-installer.sh \
+    /iptables-wrapper-installer.sh
+RUN chmod +x /iptables-wrapper-installer.sh && \
+    /iptables-wrapper-installer.sh && \
+    rm -f /iptables-wrapper-installer.sh
+
 COPY --from=builder /wigglenetd /bin
 ENTRYPOINT ["/bin/wigglenetd"]
