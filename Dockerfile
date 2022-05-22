@@ -21,8 +21,11 @@ FROM alpine:3.15
 RUN apk --no-cache add ca-certificates bash iptables ip6tables
 ADD https://raw.githubusercontent.com/kubernetes-sigs/iptables-wrappers/master/iptables-wrapper-installer.sh \
     /iptables-wrapper-installer.sh
+
+# Run with --no-sanity-check so that we can cross-build an arm64 image with Docker,
+# which seems to lack the iptables functionality in the build environment.
 RUN chmod +x /iptables-wrapper-installer.sh && \
-    /iptables-wrapper-installer.sh && \
+    /iptables-wrapper-installer.sh --no-sanity-check && \
     rm -f /iptables-wrapper-installer.sh
 
 COPY --from=builder /wigglenetd /bin
