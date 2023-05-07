@@ -55,7 +55,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
       - name: wigglenet
-        image: tibordp/wigglenet:v0.3.2
+        image: ghcr.io/tibordp/wigglenet:v0.4.1
         imagePullPolicy: Always
         env:
           # Masquerade outgoing IPv4 traffic not destined
@@ -64,7 +64,7 @@ spec:
           value: "0"
 
           # Masquerade outgoing IPv6 traffic not destined
-          # to pod on another node          
+          # to pod on another node
         - name: MASQUERADE_IPV6
           value: "1"
 
@@ -74,9 +74,9 @@ spec:
           value: "0"
 
           # Filter direct IPv6 traffic to pods from
-          # outside the cluster          
+          # outside the cluster
         - name: FILTER_IPV6
-          value: "0" 
+          value: "0"
 
           # Aditional interfaces from which to take the node's
           # host IP address (default: none)
@@ -107,7 +107,7 @@ spec:
           # for IPv4 traffic
         - name: NATIVE_ROUTING_IPV4
           value: "1"
-        
+
         - name: NODE_NAME
           valueFrom:
             fieldRef:
