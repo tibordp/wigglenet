@@ -1,7 +1,12 @@
-FROM golang:1.17 AS builder
+FROM golang:1.20 AS ip-tables-wrapper
 
-# enable Go modules support
-ENV GO111MODULE=on
+WORKDIR /tmp/
+RUN git clone https://github.com/kubernetes-sigs/iptables-wrappers.git
+RUN cd iptables-wrappers && \
+    make build
+
+
+FROM golang:1.20 AS builder
 
 WORKDIR $GOPATH/src/github.com/tibordp/wigglenet
 
@@ -17,16 +22,14 @@ COPY internal internal
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
     /wigglenetd ./cmd/wigglenet
 
-FROM alpine:3.15
+FROM alpine:3.17
 RUN apk --no-cache add ca-certificates bash iptables ip6tables
-ADD https://raw.githubusercontent.com/kubernetes-sigs/iptables-wrappers/master/iptables-wrapper-installer.sh \
-    /iptables-wrapper-installer.sh
+COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/bin/iptables-wrapper /iptables-wrapper
+COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/iptables-wrapper-installer.sh /iptables-wrapper-installer.sh
 
 # Run with --no-sanity-check so that we can cross-build an arm64 image with Docker,
 # which seems to lack the iptables functionality in the build environment.
-RUN chmod +x /iptables-wrapper-installer.sh && \
-    /iptables-wrapper-installer.sh --no-sanity-check && \
-    rm -f /iptables-wrapper-installer.sh
+RUN  /iptables-wrapper-installer.sh --no-sanity-check
 
 COPY --from=builder /wigglenetd /bin
 ENTRYPOINT ["/bin/wigglenetd"]
