@@ -31,8 +31,10 @@ restart:
 logs:
 	kubectl --context=kind-kind logs -n kube-system -l app=wigglenet
 
+PATCH_COMMAND=mkdir -p /etc/wigglenet && tee /etc/wigglenet/cidrs.txt
+
 patch-ipv6-cidr:
-	echo "2001:db8:0:1::/64" | docker exec -i kind-control-plane tee /etc/wigglenet/cidrs.txt
-	echo "2001:db8:0:2::/64" | docker exec -i kind-worker tee /etc/wigglenet/cidrs.txt
-	echo "2001:db8:0:3::/64" | docker exec -i kind-worker2 tee /etc/wigglenet/cidrs.txt
-	echo "2001:db8:0:4::/64" | docker exec -i kind-worker3 tee /etc/wigglenet/cidrs.txt
+	echo "2001:db8:0:1::/64" | docker exec -i kind-control-plane sh -c "$(PATCH_COMMAND)"
+	echo "2001:db8:0:2::/64" | docker exec -i kind-worker sh -c "$(PATCH_COMMAND)"
+	echo "2001:db8:0:3::/64" | docker exec -i kind-worker2 sh -c "$(PATCH_COMMAND)"
+	echo "2001:db8:0:4::/64" | docker exec -i kind-worker3 sh -c "$(PATCH_COMMAND)"

@@ -55,7 +55,7 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 					podsCidrs = append(podsCidrs, *cidr)
 				}
 			} else {
-				klog.Info("unrecognized '%v' in %v skipping", scanner.Text(), config.PodCidrSourceFilename)
+				klog.Infof("unrecognized '%v' in %v skipping", scanner.Text(), config.PodCidrSourceFilename)
 			}
 		}
 
