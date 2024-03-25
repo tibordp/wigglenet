@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
     /wigglenetd ./cmd/wigglenet
 
 FROM alpine:3.19
-RUN apk --no-cache add ca-certificates bash iptables ip6tables
+RUN apk --no-cache add ca-certificates bash iptables iptables-legacy
 COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/bin/iptables-wrapper /iptables-wrapper
 COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/iptables-wrapper-installer.sh /iptables-wrapper-installer.sh
 
