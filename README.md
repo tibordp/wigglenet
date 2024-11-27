@@ -23,7 +23,7 @@ Wigglenet explicitely supports and encourages allocation of public IPv6 addresse
 To install Wigglenet on a dual-stack cluster with the default settings:
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.4.3/deploy/manifest.yaml
+kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.4.4/deploy/manifest.yaml
 ```
 
 The default configuration should work out of the box for a cluster created with kubeadm using [the official dual-stack tutorial](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/dual-stack-support/). It will enable masquerading for both IPv6 and IPv4 addresses.
@@ -31,7 +31,7 @@ The default configuration should work out of the box for a cluster created with 
 Use the following manifest if the cluster is single-stack (IPv6 only):
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.4.3/deploy/ipv6_only.yaml
+kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.4.4/deploy/ipv6_only.yaml
 ```
 
 ## Configuration

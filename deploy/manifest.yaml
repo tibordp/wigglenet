@@ -55,7 +55,7 @@ spec:
       priorityClassName: system-node-critical
       containers:
       - name: wigglenet
-        image: ghcr.io/tibordp/wigglenet:v0.4.3
+        image: ghcr.io/tibordp/wigglenet:v0.4.4
         imagePullPolicy: Always
         env:
           # Masquerade outgoing IPv4 traffic not destined
