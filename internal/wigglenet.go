@@ -2,11 +2,13 @@ package internal
 
 import (
 	"context"
+	"net"
 
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/controller"
 	"github.com/tibordp/wigglenet/internal/firewall"
+	"github.com/tibordp/wigglenet/internal/networkpolicy"
 	"github.com/tibordp/wigglenet/internal/wireguard"
 
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -29,17 +31,19 @@ func New(ctx context.Context) (Wigglenet, error) {
 		return nil, err
 	}
 
-	firewallUpdates := make(chan firewall.FirewallConfig)
-	firewallManager := firewall.New(firewallUpdates)
+	// Create separate channels for firewall manager
+	podCIDRUpdates := make(chan []net.IPNet)
+	policyUpdates := make(chan []firewall.NetworkPolicyRule)
+	firewallManager := firewall.New(podCIDRUpdates, policyUpdates)
 
 	var ctrl controller.Controller
 	var publicKey []byte
 
 	if config.FirewallOnly {
-		ctrl = controller.NewController(clientset, nil, nil, firewallUpdates)
+		ctrl = controller.NewController(clientset, nil, nil, podCIDRUpdates)
 	} else if config.NativeRouting {
 		cniwriter := cni.NewCNIConfigWriter()
-		ctrl = controller.NewController(clientset, nil, cniwriter, firewallUpdates)
+		ctrl = controller.NewController(clientset, nil, cniwriter, podCIDRUpdates)
 	} else {
 		wireguard, err := wireguard.NewManager()
 		if err != nil {
@@ -47,8 +51,14 @@ func New(ctx context.Context) (Wigglenet, error) {
 		}
 
 		cniwriter := cni.NewCNIConfigWriter()
-		ctrl = controller.NewController(clientset, wireguard, cniwriter, firewallUpdates)
+		ctrl = controller.NewController(clientset, wireguard, cniwriter, podCIDRUpdates)
 		publicKey = wireguard.PublicKey()
+	}
+
+	// Create NetworkPolicy controller if enabled
+	var netpolController networkpolicy.Controller
+	if config.EnableNetworkPolicy {
+		netpolController = networkpolicy.NewController(clientset, policyUpdates)
 	}
 
 	// Populate the node annotations
@@ -57,14 +67,16 @@ func New(ctx context.Context) (Wigglenet, error) {
 	}
 
 	return &wigglenet{
-		controller:      ctrl,
-		firewallManager: firewallManager,
+		controller:        ctrl,
+		firewallManager:   firewallManager,
+		netpolController:  netpolController,
 	}, nil
 }
 
 type wigglenet struct {
-	controller      controller.Controller
-	firewallManager firewall.Manager
+	controller       controller.Controller
+	firewallManager  firewall.Manager
+	netpolController networkpolicy.Controller
 }
 
 func (c *wigglenet) Run(ctx context.Context) {
@@ -72,6 +84,11 @@ func (c *wigglenet) Run(ctx context.Context) {
 
 	wg.StartWithContext(ctx, c.firewallManager.Run)
 	wg.StartWithContext(ctx, c.controller.Run)
+
+	// Start NetworkPolicy controller if enabled
+	if c.netpolController != nil {
+		wg.StartWithContext(ctx, c.netpolController.Run)
+	}
 
 	wg.Wait()
 }

@@ -38,3 +38,7 @@ patch-ipv6-cidr:
 	echo "2001:db8:0:2::/64" | docker exec -i kind-worker sh -c "$(PATCH_COMMAND)"
 	echo "2001:db8:0:3::/64" | docker exec -i kind-worker2 sh -c "$(PATCH_COMMAND)"
 	echo "2001:db8:0:4::/64" | docker exec -i kind-worker3 sh -c "$(PATCH_COMMAND)"
+
+get-rules:
+	docker exec -i kind-control-plane sh -c "iptables-save -t filter"
+	docker exec -i kind-control-plane sh -c "ip6tables-save -t filter"
