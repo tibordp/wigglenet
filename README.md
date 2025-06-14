@@ -42,20 +42,6 @@ For configuration options see [the docs](./docs/configuration.md)
 
 Wigglenet supports Kubernetes NetworkPolicy for fine-grained traffic control between pods. NetworkPolicy support is enabled by default and can be controlled via the `ENABLE_NETWORK_POLICY` environment variable.
 
-### Features
-- **Full NetworkPolicy spec compliance**: Ingress and egress traffic filtering
-- **Pod selector, namespace selector, and IP block rules**: Complete selector support
-- **Port and protocol restrictions**: TCP/UDP with specific port ranges
-- **Dual-stack IPv4/IPv6 support**: Works seamlessly with Wigglenet's dual-stack architecture
-- **Independent operation**: NetworkPolicy controller operates independently of IPAM/routing concerns
-
-### Architecture
-NetworkPolicy implementation uses a clean separation of concerns:
-- **Main Controller**: Handles IPAM and routing, sends pod CIDR updates
-- **NetworkPolicy Controller**: Watches NetworkPolicies/Pods/Namespaces, sends policy rule updates  
-- **Firewall Manager**: Merges both streams and applies combined iptables rules
-
-This architecture prevents race conditions and ensures policy rules are never accidentally overwritten by routing updates.
 
 See `examples/networkpolicy-example.yaml` for example NetworkPolicy configurations.
 
