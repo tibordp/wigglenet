@@ -12,6 +12,24 @@ rules:
       - list
       - watch
       - update
+  # NetworkPolicy support requires access to pods, namespaces, and networkpolicies
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -107,6 +125,11 @@ spec:
           # for IPv4 traffic
         - name: NATIVE_ROUTING_IPV4
           value: "0"
+
+          # Enable NetworkPolicy support (requires RBAC permissions for
+          # pods, namespaces, and networkpolicies)
+        - name: ENABLE_NETWORK_POLICY
+          value: "1"
 
         - name: NODE_NAME
           valueFrom:

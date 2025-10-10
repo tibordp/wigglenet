@@ -40,6 +40,22 @@ Masquerading can be switched on or off per address family by `MASQUERADE_IPV4` a
 
 There are two additional options that control the firewall rules: `FILTER_IPV4` and `FILTER_IPV6`. If set to true, Wireguard will install basic stateful firewall rules for that address family preventing direct connectivity to pods from outside the cluster (egress traffic is not affected and neither are workloads exposed through NodePort and LoadBalancer services).
 
+## NetworkPolicy support
+
+NetworkPolicy enforcement can be controlled via the `ENABLE_NETWORK_POLICY` environment variable (default: true). When enabled, Wigglenet will watch for Kubernetes NetworkPolicy resources and enforce them using iptables rules.
+
+**Important**: NetworkPolicy rules are applied independently of the `FILTER_IPV4` and `FILTER_IPV6` settings. This means:
+- If `FILTER_IPV4=0` but you have NetworkPolicies, IPv4 policy rules will still be enforced
+- If `FILTER_IPV6=0` but you have NetworkPolicies, IPv6 policy rules will still be enforced
+- NetworkPolicies control pod-to-pod traffic, while FILTER settings control external-to-pod traffic
+
+NetworkPolicy support requires additional RBAC permissions:
+- `pods` (get, list, watch) - to map pod IPs to labels and namespaces
+- `namespaces` (get, list, watch) - for namespace selector rules
+- `networkpolicies.networking.k8s.io` (get, list, watch) - to watch NetworkPolicy resources
+
+These permissions are included in the default deployment manifests. If NetworkPolicy support is disabled (`ENABLE_NETWORK_POLICY=0`), these permissions are not required but can be safely left in place.
+
 ## Firewall only mode and native routing
 
 Wigglenet can run in a firewall-only mode by passing `FIREWALL_ONLY=1` environment variable. Running in this mode will not provision a Wireguard tunnel and CNI configuration, but will only filter and masquerade traffic, similar to [ip-masq-agent](https://github.com/kubernetes-sigs/ip-masq-agent). Unlike `ip-masq-agent`, Wigglenet will automatically determine all the pod CIDRs that should not be masqueraded or filtered by watching Node objects, allowing for flexible subnetting.

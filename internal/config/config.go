@@ -61,6 +61,9 @@ var (
 
 	// Where to take the pod CIDRs from, if mode is "file"
 	PodCidrSourceFilename string = os.Getenv("POD_CIDR_SOURCE_PATH")
+
+	// Enable NetworkPolicy support
+	EnableNetworkPolicy bool = GetEnvOrDefaultBool("ENABLE_NETWORK_POLICY", true)
 )
 
 func GetEnvOrDefault(name string, fallback string) string {

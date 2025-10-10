@@ -38,9 +38,15 @@ kubectl apply -f https://raw.githubusercontent.com/tibordp/wigglenet/v0.4.4/depl
 
 For configuration options see [the docs](./docs/configuration.md)
 
+## NetworkPolicy Support
+
+Wigglenet supports Kubernetes NetworkPolicy for fine-grained traffic control between pods. NetworkPolicy support is enabled by default and can be controlled via the `ENABLE_NETWORK_POLICY` environment variable.
+
+
+See `examples/networkpolicy-example.yaml` for example NetworkPolicy configurations.
+
 ## Limitations
 
-- Wigglenet does not currently support `NetworkPolicy`
 - Host-to-host traffic does not pass through the Wireguard tunnel, so it is not encrypted. This is not a major issue as services using host networking generally use TLS, but there are some notable exceptions (e.g. the default configuration for Prometheus node-exporter).
 
 ## Contributing

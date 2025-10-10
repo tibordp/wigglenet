@@ -11,7 +11,6 @@ import (
 	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
-	"github.com/tibordp/wigglenet/internal/firewall"
 	"github.com/tibordp/wigglenet/internal/util"
 	"github.com/tibordp/wigglenet/internal/wireguard"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -33,15 +32,15 @@ type Controller interface {
 }
 
 type controller struct {
-	indexer         cache.Indexer
-	queue           workqueue.RateLimitingInterface
-	informer        cache.Controller
-	wireguard       wireguard.Manager
-	cniwriter       cni.CNIConfigWriter
-	firewallUpdates chan firewall.FirewallConfig
+	indexer        cache.Indexer
+	queue          workqueue.RateLimitingInterface
+	informer       cache.Controller
+	wireguard      wireguard.Manager
+	cniwriter      cni.CNIConfigWriter
+	podCIDRUpdates chan []net.IPNet
 }
 
-func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, firewallUpdates chan firewall.FirewallConfig) *controller {
+func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []net.IPNet) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
@@ -66,12 +65,12 @@ func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Ma
 	}, cache.Indexers{})
 
 	return &controller{
-		informer:        informer,
-		indexer:         indexer,
-		queue:           queue,
-		wireguard:       wireguardManager,
-		cniwriter:       cniwriter,
-		firewallUpdates: firewallUpdates,
+		informer:       informer,
+		indexer:        indexer,
+		queue:          queue,
+		wireguard:      wireguardManager,
+		cniwriter:      cniwriter,
+		podCIDRUpdates: podCIDRUpdates,
 	}
 }
 
@@ -108,7 +107,8 @@ func (c *controller) applyFirewallRules() error {
 		}
 	}
 
-	c.firewallUpdates <- firewall.NewConfig(podCIDRs)
+	// Send pod CIDR updates to firewall manager
+	c.podCIDRUpdates <- podCIDRs
 	return nil
 }
 
