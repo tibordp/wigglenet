@@ -97,7 +97,7 @@ func setPodCidrsAnnotation(node *v1.Node) error {
 	}
 
 	podCidrs = util.SummarizeCIDRs(podCidrs)
-	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(util.PrefixesToIPNets(podCidrs))
+	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(podCidrs)
 
 	return nil
 }

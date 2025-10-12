@@ -95,7 +95,7 @@ func GetPodCIDRsFromAnnotation(node *v1.Node) []netip.Prefix {
 		return []netip.Prefix{}
 	}
 
-	return PrefixesFromIPNets(cidrs)
+	return cidrs
 }
 
 var defaultIPv6 = netip.PrefixFrom(netip.IPv6Unspecified(), 0)
