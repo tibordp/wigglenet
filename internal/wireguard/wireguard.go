@@ -217,8 +217,8 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 		return true
 	}
 
-	endpointAddr, _ := util.AddrFromIP(existingPeer.Endpoint.IP)
-	if endpointAddr != peer.Endpoint || existingPeer.Endpoint.Port != config.WGPort {
+	endpointAddr, _ := netip.AddrFromSlice(existingPeer.Endpoint.IP)
+	if endpointAddr.Unmap() != peer.Endpoint || existingPeer.Endpoint.Port != config.WGPort {
 		return true
 	}
 
@@ -252,7 +252,7 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 		}
 
 		peerConfig.PublicKey = peer.PublicKey
-		peerConfig.Endpoint = &net.UDPAddr{IP: util.AddrToIP(peer.Endpoint), Port: config.WGPort}
+		peerConfig.Endpoint = &net.UDPAddr{IP: peer.Endpoint.AsSlice(), Port: config.WGPort}
 		peerConfig.AllowedIPs = util.PrefixesToIPNets(peer.PodCIDRs)
 		peerConfig.AllowedIPs = append(peerConfig.AllowedIPs, util.PrefixesToIPNets(peer.NodeCIDRs)...)
 

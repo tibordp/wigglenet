@@ -92,7 +92,7 @@ func TestCreateChangesetAdd(t *testing.T) {
 			PublicKey:         parseKey("oFFVKLsHSZ5BFTLdKxubHnvprQ5jdssnaW6nzaQMrGY="),
 			Remove:            false,
 			UpdateOnly:        false,
-			Endpoint:          &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 24601},
+			Endpoint:          &net.UDPAddr{IP: net.IP{192, 168, 1, 1}, Port: 24601},
 			ReplaceAllowedIPs: false,
 			AllowedIPs: []net.IPNet{
 				parseCIDR("192.168.1.0/24"),
@@ -174,7 +174,7 @@ func TestCreateChangesetUpdate(t *testing.T) {
 			PublicKey:         parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 			Remove:            false,
 			UpdateOnly:        true,
-			Endpoint:          &net.UDPAddr{IP: net.ParseIP("192.168.0.1"), Port: 24601},
+			Endpoint:          &net.UDPAddr{IP: net.IP{192, 168, 0, 1}, Port: 24601},
 			ReplaceAllowedIPs: true,
 			AllowedIPs: []net.IPNet{
 				parseCIDR("192.168.0.0/24"),

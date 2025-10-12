@@ -3,7 +3,6 @@ package cni
 import (
 	"encoding/json"
 	"io"
-	"net"
 	"net/netip"
 	"os"
 	"reflect"
@@ -52,10 +51,10 @@ type IPAMConfig struct {
 type RangeSet []Range
 
 type Range struct {
-	RangeStart net.IP         `json:"rangeStart,omitempty"` // The first ip, inclusive
-	RangeEnd   net.IP         `json:"rangeEnd,omitempty"`   // The last ip, inclusive
+	RangeStart netip.Addr     `json:"rangeStart,omitempty"` // The first ip, inclusive
+	RangeEnd   netip.Addr     `json:"rangeEnd,omitempty"`   // The last ip, inclusive
 	Subnet     cniTypes.IPNet `json:"subnet"`
-	Gateway    net.IP         `json:"gateway,omitempty"`
+	Gateway    netip.Addr     `json:"gateway,omitempty"`
 }
 
 type CNIConfigWriter interface {

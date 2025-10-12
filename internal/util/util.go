@@ -11,36 +11,17 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// Conversion helpers between net.IP/net.IPNet and netip.Addr/netip.Prefix
-
-// AddrFromIP converts net.IP to netip.Addr
-func AddrFromIP(ip net.IP) (netip.Addr, bool) {
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return netip.Addr{}, false
-	}
-	return addr.Unmap(), true
-}
-
-// AddrToIP converts netip.Addr to net.IP
-// Always returns 16-byte representation for consistency with legacy code
-func AddrToIP(addr netip.Addr) net.IP {
-	if addr.Is4() {
-		// Convert to 16-byte IPv4-mapped IPv6 address for consistency
-		a16 := addr.As16()
-		return net.IP(a16[:])
-	}
-	return addr.AsSlice()
-}
+// Conversion helpers for external libraries that still use net.IP/net.IPNet.
+// For new code, use netip.Addr.AsSlice() and netip.AddrFromSlice() directly.
 
 // PrefixFromIPNet converts net.IPNet to netip.Prefix
 func PrefixFromIPNet(ipnet net.IPNet) (netip.Prefix, bool) {
-	addr, ok := AddrFromIP(ipnet.IP)
+	addr, ok := netip.AddrFromSlice(ipnet.IP)
 	if !ok {
 		return netip.Prefix{}, false
 	}
 	ones, _ := ipnet.Mask.Size()
-	return netip.PrefixFrom(addr, ones), true
+	return netip.PrefixFrom(addr.Unmap(), ones), true
 }
 
 // PrefixToIPNet converts netip.Prefix to net.IPNet
@@ -74,26 +55,6 @@ func PrefixesToIPNets(prefixes []netip.Prefix) []net.IPNet {
 		ipnets[i] = PrefixToIPNet(prefix)
 	}
 	return ipnets
-}
-
-// AddrsFromIPs converts []net.IP to []netip.Addr
-func AddrsFromIPs(ips []net.IP) []netip.Addr {
-	addrs := make([]netip.Addr, 0, len(ips))
-	for _, ip := range ips {
-		if addr, ok := AddrFromIP(ip); ok {
-			addrs = append(addrs, addr)
-		}
-	}
-	return addrs
-}
-
-// AddrsToIPs converts []netip.Addr to []net.IP
-func AddrsToIPs(addrs []netip.Addr) []net.IP {
-	ips := make([]net.IP, len(addrs))
-	for i, addr := range addrs {
-		ips[i] = AddrToIP(addr)
-	}
-	return ips
 }
 
 func SingleHostCIDR(addr netip.Addr) netip.Prefix {
@@ -205,8 +166,11 @@ func GetInterfaceIPs(ifaces string) ([]netip.Addr, error) {
 				continue
 			}
 
-			if netipAddr, ok := AddrFromIP(ip); ok && netipAddr.IsGlobalUnicast() {
-				ipAddresses = append(ipAddresses, netipAddr)
+			if netipAddr, ok := netip.AddrFromSlice(ip); ok {
+				netipAddr = netipAddr.Unmap()
+				if netipAddr.IsGlobalUnicast() {
+					ipAddresses = append(ipAddresses, netipAddr)
+				}
 			}
 		}
 	}
