@@ -12,7 +12,6 @@ import (
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/util"
 	ipt "k8s.io/kubernetes/pkg/util/iptables"
-	"k8s.io/utils/exec"
 
 	klog "k8s.io/klog/v2"
 )
@@ -81,9 +80,8 @@ type Manager interface {
 }
 
 func New(podCIDRUpdates chan []net.IPNet, policyUpdates chan []NetworkPolicyRule) Manager {
-	exec := exec.New()
-	ip6tables := ipt.New(exec, ipt.ProtocolIPv6)
-	ip4tables := ipt.New(exec, ipt.ProtocolIPv4)
+	ip6tables := ipt.New(ipt.ProtocolIPv6)
+	ip4tables := ipt.New(ipt.ProtocolIPv4)
 
 	m := firewallManager{
 		ip6tables:       ip6tables,
