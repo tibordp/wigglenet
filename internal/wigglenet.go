@@ -2,7 +2,7 @@ package internal
 
 import (
 	"context"
-	"net"
+	"net/netip"
 
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
@@ -32,7 +32,7 @@ func New(ctx context.Context) (Wigglenet, error) {
 	}
 
 	// Create separate channels for firewall manager
-	podCIDRUpdates := make(chan []net.IPNet)
+	podCIDRUpdates := make(chan []netip.Prefix)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule)
 	firewallManager := firewall.New(podCIDRUpdates, policyUpdates)
 

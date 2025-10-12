@@ -3,7 +3,7 @@ package firewall
 //go:generate mockery --all --exported
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/tibordp/wigglenet/internal/config"
@@ -43,9 +43,9 @@ func TestSyncFilterWithGlobalFiltering(t *testing.T) {
 COMMIT
 `), iptables.NoFlushTables, iptables.NoRestoreCounters).Return(nil)
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
+	cidr := netip.MustParsePrefix("2001:db8::/64")
 	policyRules := []NetworkPolicyRule{} // Empty policy rules for basic test
-	manager.syncFilterRules(mockIptables, []net.IPNet{*cidr}, policyRules, true, false)
+	manager.syncFilterRules(mockIptables, []netip.Prefix{cidr}, policyRules, true, false)
 
 	mockIptables.AssertExpectations(t)
 }
@@ -88,14 +88,14 @@ COMMIT
 	policyRules := []NetworkPolicyRule{
 		{
 			Direction:   "ingress",
-			PodIPs:      []net.IP{net.ParseIP("2001:db8::1")},
-			AllowedIPs:  []net.IP{net.ParseIP("2001:db8::2")},
+			PodIPs:      []netip.Addr{netip.MustParseAddr("2001:db8::1")},
+			AllowedIPs:  []netip.Addr{netip.MustParseAddr("2001:db8::2")},
 			Action:      "allow",
 		},
 	}
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
-	manager.syncFilterRules(mockIptables, []net.IPNet{*cidr}, policyRules, true, true)
+	cidr := netip.MustParsePrefix("2001:db8::/64")
+	manager.syncFilterRules(mockIptables, []netip.Prefix{cidr}, policyRules, true, true)
 
 	mockIptables.AssertExpectations(t)
 }
@@ -118,8 +118,8 @@ func TestSyncNat(t *testing.T) {
 COMMIT
 `), iptables.NoFlushTables, iptables.NoRestoreCounters).Return(nil)
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
-	manager.syncMasqueradeRules(mockIptables, []net.IPNet{*cidr})
+	cidr := netip.MustParsePrefix("2001:db8::/64")
+	manager.syncMasqueradeRules(mockIptables, []netip.Prefix{cidr})
 
 	mockIptables.AssertExpectations(t)
 }

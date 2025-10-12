@@ -2,6 +2,7 @@ package wireguard
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,11 @@ func parseCIDR(cidr string) net.IPNet {
 	return *c
 }
 
+func parsePrefix(cidr string) netip.Prefix {
+	p, _ := netip.ParsePrefix(cidr)
+	return p
+}
+
 func TestCreateChangesetNoChange(t *testing.T) {
 	existingPeers := []wgtypes.Peer{
 		{
@@ -32,12 +38,12 @@ func TestCreateChangesetNoChange(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},
 	}
@@ -61,22 +67,22 @@ func TestCreateChangesetAdd(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},
 
 		{
-			Endpoint: net.ParseIP("192.168.1.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.1.0/24"),
-				parseCIDR("2001:db8:0:2::/64"),
+			Endpoint: netip.MustParseAddr("192.168.1.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.1.0/24"),
+				parsePrefix("2001:db8:0:2::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("oFFVKLsHSZ5BFTLdKxubHnvprQ5jdssnaW6nzaQMrGY="),
 		},
 	}
@@ -151,13 +157,13 @@ func TestCreateChangesetUpdate(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{
-				parseCIDR("2001:db8:1::1/128"),
+			NodeCIDRs: []netip.Prefix{
+				parsePrefix("2001:db8:1::1/128"),
 			},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},

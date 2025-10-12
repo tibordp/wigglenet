@@ -3,7 +3,7 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/firewall"
@@ -26,7 +26,7 @@ type Controller interface {
 }
 
 type PodInfo struct {
-	IP        net.IP
+	IP        netip.Addr
 	Namespace string
 	Labels    map[string]string
 }
@@ -50,7 +50,7 @@ type controller struct {
 	queue workqueue.RateLimitingInterface
 
 	// Current state
-	pods       map[string]PodInfo                   // podIP -> PodInfo
+	pods       map[netip.Addr]PodInfo              // podIP -> PodInfo
 	namespaces map[string]map[string]string        // namespace -> labels
 }
 
@@ -128,7 +128,7 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 		nsIndexer:     nsIndexer,
 		nsInformer:    nsInformer,
 		queue:         queue,
-		pods:          make(map[string]PodInfo),
+		pods:          make(map[netip.Addr]PodInfo),
 		namespaces:    make(map[string]map[string]string),
 	}
 }
@@ -211,7 +211,7 @@ func (c *controller) syncState() error {
 }
 
 func (c *controller) updatePodsMap() {
-	newPods := make(map[string]PodInfo)
+	newPods := make(map[netip.Addr]PodInfo)
 
 	for _, obj := range c.podIndexer.List() {
 		if pod, ok := obj.(*v1.Pod); ok {
@@ -219,23 +219,21 @@ func (c *controller) updatePodsMap() {
 				// Handle dual-stack: read all pod IPs from status.podIPs
 				for _, podIPStatus := range pod.Status.PodIPs {
 					if podIPStatus.IP != "" {
-						ip := net.ParseIP(podIPStatus.IP)
-						if ip != nil {
-							newPods[podIPStatus.IP] = PodInfo{
-								IP:        ip,
+						if addr, err := netip.ParseAddr(podIPStatus.IP); err == nil {
+							newPods[addr] = PodInfo{
+								IP:        addr,
 								Namespace: pod.Namespace,
 								Labels:    pod.Labels,
 							}
 						}
 					}
 				}
-				
+
 				// Fallback to status.podIP for compatibility
 				if pod.Status.PodIP != "" {
-					ip := net.ParseIP(pod.Status.PodIP)
-					if ip != nil {
-						newPods[pod.Status.PodIP] = PodInfo{
-							IP:        ip,
+					if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil {
+						newPods[addr] = PodInfo{
+							IP:        addr,
 							Namespace: pod.Namespace,
 							Labels:    pod.Labels,
 						}
@@ -262,10 +260,10 @@ func (c *controller) updateNamespacesMap() {
 
 func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error) {
 	var rules []firewall.NetworkPolicyRule
-	
+
 	// Track which pods are affected by policies (by direction)
-	affectedPodsIngress := make(map[string]bool) // podIP -> true
-	affectedPodsEgress := make(map[string]bool)  // podIP -> true
+	affectedPodsIngress := make(map[netip.Addr]bool) // podIP -> true
+	affectedPodsEgress := make(map[netip.Addr]bool)  // podIP -> true
 
 	for _, obj := range c.netpolIndexer.List() {
 		netpol, ok := obj.(*networkingv1.NetworkPolicy)
@@ -280,9 +278,9 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 		if len(netpol.Spec.Ingress) > 0 {
 			// Mark these pods as affected by ingress policies
 			for _, pod := range selectedPods {
-				affectedPodsIngress[pod.IP.String()] = true
+				affectedPodsIngress[pod.IP] = true
 			}
-			
+
 			for _, ingressRule := range netpol.Spec.Ingress {
 				rule := c.buildIngressRule(selectedPods, ingressRule, netpol.Namespace)
 				if rule != nil {
@@ -295,9 +293,9 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 		if len(netpol.Spec.Egress) > 0 {
 			// Mark these pods as affected by egress policies
 			for _, pod := range selectedPods {
-				affectedPodsEgress[pod.IP.String()] = true
+				affectedPodsEgress[pod.IP] = true
 			}
-			
+
 			for _, egressRule := range netpol.Spec.Egress {
 				rule := c.buildEgressRule(selectedPods, egressRule, netpol.Namespace)
 				if rule != nil {
@@ -308,26 +306,20 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 	}
 
 	// Generate default deny rules for affected pods
-	for podIPStr := range affectedPodsIngress {
-		podIP := net.ParseIP(podIPStr)
-		if podIP != nil {
-			rules = append(rules, firewall.NetworkPolicyRule{
-				Direction: "ingress",
-				PodIPs:    []net.IP{podIP},
-				Action:    "deny",
-			})
-		}
+	for podIP := range affectedPodsIngress {
+		rules = append(rules, firewall.NetworkPolicyRule{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{podIP},
+			Action:    "deny",
+		})
 	}
 
-	for podIPStr := range affectedPodsEgress {
-		podIP := net.ParseIP(podIPStr)
-		if podIP != nil {
-			rules = append(rules, firewall.NetworkPolicyRule{
-				Direction: "egress", 
-				PodIPs:    []net.IP{podIP},
-				Action:    "deny",
-			})
-		}
+	for podIP := range affectedPodsEgress {
+		rules = append(rules, firewall.NetworkPolicyRule{
+			Direction: "egress",
+			PodIPs:    []netip.Addr{podIP},
+			Action:    "deny",
+		})
 	}
 
 	return rules, nil
@@ -358,7 +350,7 @@ func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networ
 
 	rule := &firewall.NetworkPolicyRule{
 		Direction: "ingress",
-		PodIPs:    make([]net.IP, 0, len(selectedPods)),
+		PodIPs:    make([]netip.Addr, 0, len(selectedPods)),
 		Action:    "allow",
 	}
 
@@ -387,9 +379,9 @@ func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networ
 		}
 	} else {
 		// Empty from means allow from anywhere
-		rule.AllowedCIDRs = []net.IPNet{
-			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
-			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		rule.AllowedCIDRs = []netip.Prefix{
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
 		}
 	}
 
@@ -403,7 +395,7 @@ func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networki
 
 	rule := &firewall.NetworkPolicyRule{
 		Direction: "egress",
-		PodIPs:    make([]net.IP, 0, len(selectedPods)),
+		PodIPs:    make([]netip.Addr, 0, len(selectedPods)),
 		Action:    "allow",
 	}
 
@@ -432,9 +424,9 @@ func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networki
 		}
 	} else {
 		// Empty to means allow to anywhere
-		rule.AllowedCIDRs = []net.IPNet{
-			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
-			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		rule.AllowedCIDRs = []netip.Prefix{
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
 		}
 	}
 
@@ -479,9 +471,9 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 
 	// Handle ipBlock
 	if peer.IPBlock != nil {
-		_, cidr, err := net.ParseCIDR(peer.IPBlock.CIDR)
+		prefix, err := netip.ParsePrefix(peer.IPBlock.CIDR)
 		if err == nil {
-			rule.AllowedCIDRs = append(rule.AllowedCIDRs, *cidr)
+			rule.AllowedCIDRs = append(rule.AllowedCIDRs, prefix)
 		}
 	}
 }

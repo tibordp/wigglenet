@@ -1,8 +1,8 @@
 package util
 
 import (
-	"bytes"
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
@@ -11,27 +11,113 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func SingleHostCIDR(ip net.IP) net.IPNet {
-	canonical := Canonicalize(ip)
+// Conversion helpers between net.IP/net.IPNet and netip.Addr/netip.Prefix
+
+// AddrFromIP converts net.IP to netip.Addr
+func AddrFromIP(ip net.IP) (netip.Addr, bool) {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+// AddrToIP converts netip.Addr to net.IP
+// Always returns 16-byte representation for consistency with legacy code
+func AddrToIP(addr netip.Addr) net.IP {
+	if addr.Is4() {
+		// Convert to 16-byte IPv4-mapped IPv6 address for consistency
+		a16 := addr.As16()
+		return net.IP(a16[:])
+	}
+	return addr.AsSlice()
+}
+
+// PrefixFromIPNet converts net.IPNet to netip.Prefix
+func PrefixFromIPNet(ipnet net.IPNet) (netip.Prefix, bool) {
+	addr, ok := AddrFromIP(ipnet.IP)
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	ones, _ := ipnet.Mask.Size()
+	return netip.PrefixFrom(addr, ones), true
+}
+
+// PrefixToIPNet converts netip.Prefix to net.IPNet
+func PrefixToIPNet(prefix netip.Prefix) net.IPNet {
+	addr := prefix.Masked().Addr()
+	bits := 32
+	if addr.Is6() {
+		bits = 128
+	}
 	return net.IPNet{
-		IP:   canonical,
-		Mask: net.CIDRMask(8*len(canonical), 8*len(canonical)),
+		IP:   addr.AsSlice(),
+		Mask: net.CIDRMask(prefix.Bits(), bits),
 	}
 }
 
-func GetPodCIDRsFromSpec(node *v1.Node) []net.IPNet {
-	cidrs := make([]net.IPNet, 0, len(node.Spec.PodCIDRs))
+// PrefixesFromIPNets converts []net.IPNet to []netip.Prefix
+func PrefixesFromIPNets(ipnets []net.IPNet) []netip.Prefix {
+	prefixes := make([]netip.Prefix, 0, len(ipnets))
+	for _, ipnet := range ipnets {
+		if prefix, ok := PrefixFromIPNet(ipnet); ok {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
+}
+
+// PrefixesToIPNets converts []netip.Prefix to []net.IPNet
+func PrefixesToIPNets(prefixes []netip.Prefix) []net.IPNet {
+	ipnets := make([]net.IPNet, len(prefixes))
+	for i, prefix := range prefixes {
+		ipnets[i] = PrefixToIPNet(prefix)
+	}
+	return ipnets
+}
+
+// AddrsFromIPs converts []net.IP to []netip.Addr
+func AddrsFromIPs(ips []net.IP) []netip.Addr {
+	addrs := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if addr, ok := AddrFromIP(ip); ok {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
+}
+
+// AddrsToIPs converts []netip.Addr to []net.IP
+func AddrsToIPs(addrs []netip.Addr) []net.IP {
+	ips := make([]net.IP, len(addrs))
+	for i, addr := range addrs {
+		ips[i] = AddrToIP(addr)
+	}
+	return ips
+}
+
+func SingleHostCIDR(addr netip.Addr) netip.Prefix {
+	bits := 32
+	if addr.Is6() {
+		bits = 128
+	}
+	prefix := netip.PrefixFrom(addr, bits)
+	return prefix.Masked()
+}
+
+func GetPodCIDRsFromSpec(node *v1.Node) []netip.Prefix {
+	cidrs := make([]netip.Prefix, 0, len(node.Spec.PodCIDRs))
 
 	if len(node.Spec.PodCIDRs) == 0 && node.Spec.PodCIDR != "" {
-		if _, route, err := net.ParseCIDR(node.Spec.PodCIDR); err == nil && route != nil {
-			cidrs = append(cidrs, *route)
+		if prefix, err := netip.ParsePrefix(node.Spec.PodCIDR); err == nil {
+			cidrs = append(cidrs, prefix)
 		} else {
 			klog.Warningf("invalid CIDR prefix for node %v: %v", node.Name, node.Spec.PodCIDR)
 		}
 	} else {
 		for _, v := range node.Spec.PodCIDRs {
-			if _, route, err := net.ParseCIDR(v); err == nil && route != nil {
-				cidrs = append(cidrs, *route)
+			if prefix, err := netip.ParsePrefix(v); err == nil {
+				cidrs = append(cidrs, prefix)
 			} else {
 				klog.Warningf("invalid CIDR prefix for node %v: %v", node.Name, v)
 			}
@@ -41,37 +127,29 @@ func GetPodCIDRsFromSpec(node *v1.Node) []net.IPNet {
 	return cidrs
 }
 
-func GetPodCIDRsFromAnnotation(node *v1.Node) []net.IPNet {
+func GetPodCIDRsFromAnnotation(node *v1.Node) []netip.Prefix {
 	annotationValue := node.Annotations[annotation.PodCidrsAnnotation]
 	cidrs, err := annotation.UnmarshalPodCidrs(annotationValue)
 	if err != nil {
-		return []net.IPNet{}
+		return []netip.Prefix{}
 	}
 
-	return cidrs
+	return PrefixesFromIPNets(cidrs)
 }
 
-var defaultIPv6 = net.IPNet{
-	IP:   net.IPv6zero,
-	Mask: net.IPMask(net.IPv6zero),
-}
+var defaultIPv6 = netip.PrefixFrom(netip.IPv6Unspecified(), 0)
+var defaultIPv4 = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 
-var defaultIPv4 = net.IPNet{
-	IP:   net.IPv4zero,
-	Mask: net.IPMask(net.IPv4zero),
-}
+func GetDefaultRoutes(podCIDRs []netip.Prefix) []netip.Prefix {
+	routes := make([]netip.Prefix, 0)
 
-func GetDefaultRoutes(podCIDRs []net.IPNet) []net.IPNet {
-	routes := make([]net.IPNet, 0)
-
-	var hasIPv4 bool = false
-	var hasIPv6 bool = false
+	var hasIPv4, hasIPv6 bool
 
 	for _, cidr := range podCIDRs {
-		if cidr.IP.To4() == nil && !hasIPv6 {
+		if cidr.Addr().Is6() && !hasIPv6 {
 			routes = append(routes, defaultIPv6)
 			hasIPv6 = true
-		} else if !hasIPv4 {
+		} else if cidr.Addr().Is4() && !hasIPv4 {
 			routes = append(routes, defaultIPv4)
 			hasIPv4 = true
 		}
@@ -80,28 +158,34 @@ func GetDefaultRoutes(podCIDRs []net.IPNet) []net.IPNet {
 	return routes
 }
 
-func GetPodNetworkLocalAddresses(podCIDRs []net.IPNet) []net.IP {
-	localAddresses := make([]net.IP, 0)
+func GetPodNetworkLocalAddresses(podCIDRs []netip.Prefix) []netip.Addr {
+	localAddresses := make([]netip.Addr, 0)
 	for _, cidr := range podCIDRs {
 		// host-ipam plugin reserves the IP with the host index of 1 to the node
 		// itself. We want to make sure the wg interface has the same IP assigned to it
 		// so that that internal IP is used as a source in node-to-pod communication
-		nodeIp := make(net.IP, len(cidr.IP))
-		copy(nodeIp, cidr.IP)
-		nodeIp[len(nodeIp)-1] |= 1
-		localAddresses = append(localAddresses, nodeIp)
+		addr := cidr.Addr()
+		if addr.Is4() {
+			a := addr.As4()
+			a[3] |= 1
+			localAddresses = append(localAddresses, netip.AddrFrom4(a))
+		} else {
+			a := addr.As16()
+			a[15] |= 1
+			localAddresses = append(localAddresses, netip.AddrFrom16(a))
+		}
 	}
 
 	return localAddresses
 }
 
-func GetInterfaceIPs(ifaces string) ([]net.IP, error) {
-	ipAddresses := make([]net.IP, 0)
+func GetInterfaceIPs(ifaces string) ([]netip.Addr, error) {
+	ipAddresses := make([]netip.Addr, 0)
 
-	for _, iface := range strings.Split(ifaces, ",") {
-		iface, err := net.InterfaceByName(iface)
+	for _, ifaceName := range strings.Split(ifaces, ",") {
+		iface, err := net.InterfaceByName(ifaceName)
 		if err != nil {
-			klog.Warningf("interface %v not found, skipping", iface)
+			klog.Warningf("interface %v not found, skipping", ifaceName)
 			continue
 		}
 
@@ -121,40 +205,19 @@ func GetInterfaceIPs(ifaces string) ([]net.IP, error) {
 				continue
 			}
 
-			if ip.IsGlobalUnicast() {
-				ipAddresses = append(ipAddresses, ip)
+			if netipAddr, ok := AddrFromIP(ip); ok && netipAddr.IsGlobalUnicast() {
+				ipAddresses = append(ipAddresses, netipAddr)
 			}
 		}
 	}
 	return ipAddresses, nil
 }
 
-func IPCompare(a, b net.IP) int {
-	aV4 := a.To4()
-	bV4 := b.To4()
-
-	if (aV4 != nil) != (bV4 != nil) {
-		if aV4 != nil {
-			return 1
-		} else {
-			return -1
-		}
-	}
-
-	if aV4 != nil {
-		// Make sure that ::ffff:a.b.c.d compares equal to a.b.c.d
-		return bytes.Compare(aV4, bV4)
-	} else {
-		return bytes.Compare(a, b)
-	}
-}
-
-func GetNodeAddresses(node *v1.Node) []net.IP {
-	ipAddresses := make([]net.IP, 0)
+func GetNodeAddresses(node *v1.Node) []netip.Addr {
+	ipAddresses := make([]netip.Addr, 0)
 	for _, v := range node.Status.Addresses {
 		if v.Type == v1.NodeInternalIP || v.Type == v1.NodeExternalIP {
-			addr := net.ParseIP(v.Address)
-			if addr != nil {
+			if addr, err := netip.ParseAddr(v.Address); err == nil {
 				ipAddresses = append(ipAddresses, addr)
 			}
 		}
@@ -162,20 +225,11 @@ func GetNodeAddresses(node *v1.Node) []net.IP {
 	return ipAddresses
 }
 
-func Canonicalize(ip net.IP) net.IP {
-	v4 := ip.To4()
-	if v4 != nil {
-		// we could get ::ffff:a.b.c.d
-		return v4
-	}
-	return ip
-}
-
-func SelectIP(ips []net.IP, family config.IPFamily) *net.IP {
+func SelectIP(ips []netip.Addr, family config.IPFamily) *netip.Addr {
 	for _, ip := range ips {
-		if ip.To4() != nil && (family == config.IPv4Family || family == config.DualStackFamily) {
+		if ip.Is4() && (family == config.IPv4Family || family == config.DualStackFamily) {
 			return &ip
-		} else if ip.To4() == nil && (family == config.IPv6Family || family == config.DualStackFamily) {
+		} else if ip.Is6() && (family == config.IPv6Family || family == config.DualStackFamily) {
 			return &ip
 		}
 	}

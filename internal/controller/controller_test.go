@@ -1,7 +1,7 @@
 package controller
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -12,9 +12,9 @@ import (
 	"github.com/tibordp/wigglenet/internal/wireguard"
 )
 
-func parseCIDR(cidr string) net.IPNet {
-	_, c, _ := net.ParseCIDR(cidr)
-	return *c
+func parsePrefix(cidr string) netip.Prefix {
+	p, _ := netip.ParsePrefix(cidr)
+	return p
 }
 
 func TestMakePeer2(t *testing.T) {
@@ -37,15 +37,15 @@ func TestMakePeer2(t *testing.T) {
 	})
 
 	expected := wireguard.Peer{
-		Endpoint: net.ParseIP("2001:db8::1234"),
-		NodeCIDRs: []net.IPNet{
-			parseCIDR("2001:db8::1234/128"),
-			parseCIDR("10.0.0.1/32"),
-			parseCIDR("192.168.0.1/32"),
+		Endpoint: netip.MustParseAddr("10.0.0.1"),
+		NodeCIDRs: []netip.Prefix{
+			parsePrefix("10.0.0.1/32"),
+			parsePrefix("192.168.0.1/32"),
+			parsePrefix("2001:db8::1234/128"),
 		},
-		PodCIDRs: []net.IPNet{
-			parseCIDR("2001:db8::/64"),
-			parseCIDR("10.0.0.0/24"),
+		PodCIDRs: []netip.Prefix{
+			parsePrefix("2001:db8::/64"),
+			parsePrefix("10.0.0.0/24"),
 		},
 		PublicKey: wgtypes.Key{
 			0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,

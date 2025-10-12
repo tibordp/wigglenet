@@ -32,9 +32,9 @@ func (c *jsonableCIDR) UnmarshalJSON(data []byte) error {
 	}
 }
 
-func UnmarshalPodCidrs(anotationValue string) ([]net.IPNet, error) {
+func UnmarshalPodCidrs(annotationValue string) ([]net.IPNet, error) {
 	var jsonablePodCidrs []jsonableCIDR
-	if err := json.Unmarshal([]byte(anotationValue), &jsonablePodCidrs); err != nil {
+	if err := json.Unmarshal([]byte(annotationValue), &jsonablePodCidrs); err != nil {
 		return nil, err
 	}
 

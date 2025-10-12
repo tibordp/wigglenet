@@ -3,7 +3,7 @@ package firewall
 import (
 	"bytes"
 	"context"
-	"net"
+	"net/netip"
 	"reflect"
 	"strconv"
 	"strings"
@@ -32,9 +32,9 @@ type ipTables interface {
 }
 
 type NetworkPolicyRule struct {
-	PodIPs       []net.IP
-	AllowedIPs   []net.IP
-	AllowedCIDRs []net.IPNet
+	PodIPs       []netip.Addr
+	AllowedIPs   []netip.Addr
+	AllowedCIDRs []netip.Prefix
 	Ports        []int
 	Protocol     string
 	Direction    string
@@ -42,11 +42,11 @@ type NetworkPolicyRule struct {
 }
 
 type FirewallConfig struct {
-	PodCIDRs    []net.IPNet
+	PodCIDRs    []netip.Prefix
 	PolicyRules []NetworkPolicyRule
 }
 
-func NewConfig(podCIDRs []net.IPNet) FirewallConfig {
+func NewConfig(podCIDRs []netip.Prefix) FirewallConfig {
 	aggregated := util.SummarizeCIDRs(podCIDRs)
 	config := FirewallConfig{
 		PodCIDRs:    aggregated,
@@ -56,7 +56,7 @@ func NewConfig(podCIDRs []net.IPNet) FirewallConfig {
 	return config
 }
 
-func NewConfigWithPolicies(podCIDRs []net.IPNet, policyRules []NetworkPolicyRule) FirewallConfig {
+func NewConfigWithPolicies(podCIDRs []netip.Prefix, policyRules []NetworkPolicyRule) FirewallConfig {
 	aggregated := util.SummarizeCIDRs(podCIDRs)
 	config := FirewallConfig{
 		PodCIDRs:    aggregated,
@@ -69,9 +69,9 @@ func NewConfigWithPolicies(podCIDRs []net.IPNet, policyRules []NetworkPolicyRule
 type firewallManager struct {
 	ip6tables       ipTables
 	ip4tables       ipTables
-	podCIDRUpdates  chan []net.IPNet
+	podCIDRUpdates  chan []netip.Prefix
 	policyUpdates   chan []NetworkPolicyRule
-	currentPodCIDRs []net.IPNet
+	currentPodCIDRs []netip.Prefix
 	currentPolicies []NetworkPolicyRule
 }
 
@@ -79,7 +79,7 @@ type Manager interface {
 	Run(ctx context.Context)
 }
 
-func New(podCIDRUpdates chan []net.IPNet, policyUpdates chan []NetworkPolicyRule) Manager {
+func New(podCIDRUpdates chan []netip.Prefix, policyUpdates chan []NetworkPolicyRule) Manager {
 	ip6tables := ipt.New(ipt.ProtocolIPv6)
 	ip4tables := ipt.New(ipt.ProtocolIPv4)
 
@@ -88,7 +88,7 @@ func New(podCIDRUpdates chan []net.IPNet, policyUpdates chan []NetworkPolicyRule
 		ip4tables:       ip4tables,
 		podCIDRUpdates:  podCIDRUpdates,
 		policyUpdates:   policyUpdates,
-		currentPodCIDRs: []net.IPNet{},
+		currentPodCIDRs: []netip.Prefix{},
 		currentPolicies: []NetworkPolicyRule{},
 	}
 
@@ -137,11 +137,11 @@ func (c *firewallManager) Run(ctx context.Context) {
 }
 
 func (c *firewallManager) syncRules() error {
-	ip4cidrs := make([]net.IPNet, 0)
-	ip6cidrs := make([]net.IPNet, 0)
+	ip4cidrs := make([]netip.Prefix, 0)
+	ip6cidrs := make([]netip.Prefix, 0)
 
 	for _, cidr := range c.currentPodCIDRs {
-		if cidr.IP.To4() == nil {
+		if cidr.Addr().Is6() {
 			ip6cidrs = append(ip6cidrs, cidr)
 		} else {
 			ip4cidrs = append(ip4cidrs, cidr)
@@ -157,7 +157,7 @@ func (c *firewallManager) syncRules() error {
 		hasIPv6 := false
 
 		for _, ip := range rule.PodIPs {
-			if ip.To4() != nil {
+			if ip.Is4() {
 				hasIPv4 = true
 			} else {
 				hasIPv6 = true
@@ -201,7 +201,7 @@ func (c *firewallManager) syncRules() error {
 	return nil
 }
 
-func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []net.IPNet) error {
+func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []netip.Prefix) error {
 	if _, err := tables.EnsureChain(ipt.TableNAT, natChain); err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []ne
 	return nil
 }
 
-func (c *firewallManager) syncFilterRules(tables ipTables, nonFilterCidrs []net.IPNet, policyRules []NetworkPolicyRule, isIPv6 bool, enableNetworkPolicy bool) error {
+func (c *firewallManager) syncFilterRules(tables ipTables, nonFilterCidrs []netip.Prefix, policyRules []NetworkPolicyRule, isIPv6 bool, enableNetworkPolicy bool) error {
 	// Determine if we need global filtering (based on config) or just NetworkPolicy filtering
 	enableGlobalFiltering := (isIPv6 && config.FilterIPv6) || (!isIPv6 && config.FilterIPv4)
 
@@ -315,7 +315,7 @@ func (c *firewallManager) writeNetworkPolicyRules(lines *bytes.Buffer, rule Netw
 		// Generate deny rules for specific pods
 		for _, podIP := range rule.PodIPs {
 			// Skip if IP family doesn't match
-			if (isIPv6 && podIP.To4() != nil) || (!isIPv6 && podIP.To4() == nil) {
+			if (isIPv6 && podIP.Is4()) || (!isIPv6 && podIP.Is6()) {
 				continue
 			}
 
@@ -337,7 +337,7 @@ func (c *firewallManager) writeNetworkPolicyRules(lines *bytes.Buffer, rule Netw
 	// Generate allow rules (original logic)
 	for _, podIP := range rule.PodIPs {
 		// Skip if IP family doesn't match
-		if (isIPv6 && podIP.To4() != nil) || (!isIPv6 && podIP.To4() == nil) {
+		if (isIPv6 && podIP.Is4()) || (!isIPv6 && podIP.Is6()) {
 			continue
 		}
 
@@ -374,7 +374,7 @@ func (c *firewallManager) writeNetworkPolicyRules(lines *bytes.Buffer, rule Netw
 		// Allow traffic from specific IPs
 		for _, allowedIP := range rule.AllowedIPs {
 			// Skip if IP family doesn't match
-			if (isIPv6 && allowedIP.To4() != nil) || (!isIPv6 && allowedIP.To4() == nil) {
+			if (isIPv6 && allowedIP.Is4()) || (!isIPv6 && allowedIP.Is6()) {
 				continue
 			}
 
@@ -391,7 +391,7 @@ func (c *firewallManager) writeNetworkPolicyRules(lines *bytes.Buffer, rule Netw
 		// Allow traffic from specific CIDRs
 		for _, allowedCIDR := range rule.AllowedCIDRs {
 			// Skip if IP family doesn't match
-			if (isIPv6 && allowedCIDR.IP.To4() != nil) || (!isIPv6 && allowedCIDR.IP.To4() == nil) {
+			if (isIPv6 && allowedCIDR.Addr().Is4()) || (!isIPv6 && allowedCIDR.Addr().Is6()) {
 				continue
 			}
 

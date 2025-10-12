@@ -69,31 +69,24 @@ var (
 func GetEnvOrDefault(name string, fallback string) string {
 	if val, ok := os.LookupEnv(name); ok {
 		return val
-	} else {
-		return fallback
 	}
+	return fallback
 }
 
 func GetEnvOrDefaultInt(name string, fallback int) int {
 	if val, ok := os.LookupEnv(name); ok {
-		if i, err := strconv.Atoi(val); err != nil {
-			return fallback
-		} else {
-			return i
+		if intVal, err := strconv.Atoi(val); err == nil {
+			return intVal
 		}
-	} else {
-		return fallback
 	}
+	return fallback
 }
 
 func GetEnvOrDefaultBool(name string, fallback bool) bool {
 	if val, ok := os.LookupEnv(name); ok {
-		if i, err := strconv.ParseBool(val); err != nil {
-			return fallback
-		} else {
-			return i
+		if boolVal, err := strconv.ParseBool(val); err == nil {
+			return boolVal
 		}
-	} else {
-		return fallback
 	}
+	return fallback
 }

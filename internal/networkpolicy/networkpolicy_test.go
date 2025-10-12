@@ -1,7 +1,7 @@
 package networkpolicy
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/tibordp/wigglenet/internal/firewall"
@@ -15,19 +15,19 @@ import (
 
 func TestSelectPods(t *testing.T) {
 	c := &controller{
-		pods: map[string]PodInfo{
-			"10.0.0.1": {
-				IP:        net.ParseIP("10.0.0.1"),
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web", "tier": "frontend"},
 			},
-			"10.0.0.2": {
-				IP:        net.ParseIP("10.0.0.2"),
+			netip.MustParseAddr("10.0.0.2"): {
+				IP:        netip.MustParseAddr("10.0.0.2"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "db", "tier": "backend"},
 			},
-			"10.0.0.3": {
-				IP:        net.ParseIP("10.0.0.3"),
+			netip.MustParseAddr("10.0.0.3"): {
+				IP:        netip.MustParseAddr("10.0.0.3"),
 				Namespace: "kube-system",
 				Labels:    map[string]string{"app": "web", "tier": "frontend"},
 			},
@@ -65,14 +65,14 @@ func TestSelectPods(t *testing.T) {
 
 func TestBuildIngressRule(t *testing.T) {
 	c := &controller{
-		pods: map[string]PodInfo{
-			"10.0.0.1": {
-				IP:        net.ParseIP("10.0.0.1"),
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web"},
 			},
-			"10.0.0.2": {
-				IP:        net.ParseIP("10.0.0.2"),
+			netip.MustParseAddr("10.0.0.2"): {
+				IP:        netip.MustParseAddr("10.0.0.2"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "backend"},
 			},
@@ -83,7 +83,7 @@ func TestBuildIngressRule(t *testing.T) {
 	}
 
 	selectedPods := []PodInfo{
-		{IP: net.ParseIP("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
+		{IP: netip.MustParseAddr("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
 	}
 
 	// Test basic ingress rule with port
@@ -120,9 +120,9 @@ func TestBuildIngressRule(t *testing.T) {
 
 func TestBuildEgressRule(t *testing.T) {
 	c := &controller{
-		pods: map[string]PodInfo{
-			"10.0.0.1": {
-				IP:        net.ParseIP("10.0.0.1"),
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web"},
 			},
@@ -130,7 +130,7 @@ func TestBuildEgressRule(t *testing.T) {
 	}
 
 	selectedPods := []PodInfo{
-		{IP: net.ParseIP("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
+		{IP: netip.MustParseAddr("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
 	}
 
 	// Test egress rule with CIDR
@@ -156,14 +156,14 @@ func TestBuildEgressRule(t *testing.T) {
 
 func TestProcessNetworkPolicyPeer(t *testing.T) {
 	c := &controller{
-		pods: map[string]PodInfo{
-			"10.0.0.1": {
-				IP:        net.ParseIP("10.0.0.1"),
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web"},
 			},
-			"10.0.0.2": {
-				IP:        net.ParseIP("10.0.0.2"),
+			netip.MustParseAddr("10.0.0.2"): {
+				IP:        netip.MustParseAddr("10.0.0.2"),
 				Namespace: "kube-system",
 				Labels:    map[string]string{"app": "dns"},
 			},
@@ -189,7 +189,7 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 	assert.Equal(t, "10.0.0.1", rule.AllowedIPs[0].String())
 
 	// Reset rule
-	rule.AllowedIPs = []net.IP{}
+	rule.AllowedIPs = []netip.Addr{}
 
 	// Test namespace selector
 	peer = networkingv1.NetworkPolicyPeer{
@@ -202,8 +202,8 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 	assert.Equal(t, "10.0.0.2", rule.AllowedIPs[0].String())
 
 	// Reset rule
-	rule.AllowedIPs = []net.IP{}
-	rule.AllowedCIDRs = []net.IPNet{}
+	rule.AllowedIPs = []netip.Addr{}
+	rule.AllowedCIDRs = []netip.Prefix{}
 
 	// Test IP block
 	peer = networkingv1.NetworkPolicyPeer{
@@ -218,24 +218,24 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 
 func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 	c := &controller{
-		pods: map[string]PodInfo{
-			"10.0.0.1": {
-				IP:        net.ParseIP("10.0.0.1"),
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web"},
 			},
-			"10.0.0.2": {
-				IP:        net.ParseIP("10.0.0.2"),
+			netip.MustParseAddr("10.0.0.2"): {
+				IP:        netip.MustParseAddr("10.0.0.2"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "backend"},
 			},
-			"2001:db8::1": {
-				IP:        net.ParseIP("2001:db8::1"),
+			netip.MustParseAddr("2001:db8::1"): {
+				IP:        netip.MustParseAddr("2001:db8::1"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "web"},
 			},
-			"2001:db8::2": {
-				IP:        net.ParseIP("2001:db8::2"),
+			netip.MustParseAddr("2001:db8::2"): {
+				IP:        netip.MustParseAddr("2001:db8::2"),
 				Namespace: "default",
 				Labels:    map[string]string{"app": "backend"},
 			},

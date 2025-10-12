@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"reflect"
 
@@ -14,7 +15,7 @@ import (
 )
 
 type CNIConfig struct {
-	PodCIDRs []net.IPNet
+	PodCIDRs []netip.Prefix
 }
 
 // NetConfList is a CNI chaining configuration
@@ -106,16 +107,18 @@ func (c *cniConfigWriter) WriteCNIConfig(inputs CNIConfig) error {
 func writeCNIConfig(w io.Writer, data CNIConfig) error {
 	routes := make([]*cniTypes.Route, 0)
 	for _, route := range util.GetDefaultRoutes(data.PodCIDRs) {
+		ipnet := util.PrefixToIPNet(route)
 		routes = append(routes, &cniTypes.Route{
-			Dst: route,
+			Dst: ipnet,
 		})
 	}
 
 	ranges := make([]RangeSet, 0)
 	for _, cidr := range data.PodCIDRs {
+		ipnet := util.PrefixToIPNet(cidr)
 		ranges = append(ranges, RangeSet{
 			Range{
-				Subnet: cniTypes.IPNet(cidr),
+				Subnet: cniTypes.IPNet(ipnet),
 			},
 		})
 	}

@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
-	"sort"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
@@ -37,10 +37,10 @@ type controller struct {
 	informer       cache.Controller
 	wireguard      wireguard.Manager
 	cniwriter      cni.CNIConfigWriter
-	podCIDRUpdates chan []net.IPNet
+	podCIDRUpdates chan []netip.Prefix
 }
 
-func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []net.IPNet) *controller {
+func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []netip.Prefix) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
@@ -99,7 +99,7 @@ func (c *controller) processChanges(key interface{}) error {
 // applyFirewallRules calculates the new pod network and sends it to the iptables sync
 // goroutine so that pod traffic can be appropriately filtered and masqueraded.
 func (c *controller) applyFirewallRules() error {
-	podCIDRs := make([]net.IPNet, 0)
+	podCIDRs := make([]netip.Prefix, 0)
 
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
@@ -117,7 +117,7 @@ func (c *controller) applyFirewallRules() error {
 func (c *controller) applyWireguardConfiguration() error {
 
 	peers := make([]wireguard.Peer, 0)
-	localAddresses := make([]net.IP, 0)
+	localAddresses := make([]netip.Addr, 0)
 
 	for _, v := range c.indexer.List() {
 		if node, ok := v.(*v1.Node); ok {
@@ -160,8 +160,8 @@ func (c *controller) ensureCNI() error {
 	return nil
 }
 
-func getNodeAddresses(node *v1.Node) ([]net.IP, error) {
-	var annotationAddresses []net.IP
+func getNodeAddresses(node *v1.Node) ([]netip.Addr, error) {
+	var annotationAddresses []netip.Addr
 	err := json.Unmarshal([]byte(node.Annotations[annotation.NodeIpsAnnotation]), &annotationAddresses)
 	if annotationAddresses == nil || err != nil {
 		klog.Warningf("invalid node-ips %v", node.Annotations[annotation.NodeIpsAnnotation])
@@ -170,25 +170,23 @@ func getNodeAddresses(node *v1.Node) ([]net.IP, error) {
 
 	statusAddresses := util.GetNodeAddresses(node)
 
-	keys := make(map[string]struct{})
-	nodeAddresses := make([]net.IP, 0)
+	nodeAddresses := make([]netip.Addr, 0)
 
-	for _, coll := range [][]net.IP{statusAddresses, annotationAddresses} {
+	for _, coll := range [][]netip.Addr{statusAddresses, annotationAddresses} {
 		if coll == nil {
 			continue
 		}
 
 		for _, entry := range coll {
-			if _, value := keys[entry.String()]; !value {
-				keys[entry.String()] = struct{}{}
-				nodeAddresses = append(nodeAddresses, entry)
-			}
+			nodeAddresses = append(nodeAddresses, entry)
 		}
 	}
 
-	sort.Slice(nodeAddresses, func(i, j int) bool {
-		return util.IPCompare(nodeAddresses[i], nodeAddresses[j]) < 0
+	// Remove duplicates using slices.Compact (requires sorted slice)
+	slices.SortFunc(nodeAddresses, func(a, b netip.Addr) int {
+		return a.Compare(b)
 	})
+	nodeAddresses = slices.Compact(nodeAddresses)
 
 	return nodeAddresses, nil
 }
@@ -219,11 +217,8 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 		return nil
 	}
 
-	nodeCidrs := make([]net.IPNet, 0, len(nodeAddresses))
+	nodeCidrs := make([]netip.Prefix, 0, len(nodeAddresses))
 	for _, nodeAddress := range nodeAddresses {
-		if nodeAddresses == nil {
-			return nil
-		}
 		nodeCidrs = append(nodeCidrs, util.SingleHostCIDR(nodeAddress))
 	}
 

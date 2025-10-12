@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -11,16 +11,16 @@ import (
 
 func TestSeparateChannelArchitecture(t *testing.T) {
 	// Create channels
-	podCIDRUpdates := make(chan []net.IPNet, 1)
+	podCIDRUpdates := make(chan []netip.Prefix, 1)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule, 1)
 
 	// Test that channels are separate and don't interfere
-	
+
 	// Send pod CIDR update
-	_, cidr1, _ := net.ParseCIDR("10.0.0.0/24")
-	_, cidr2, _ := net.ParseCIDR("fd00::/64")
-	podCIDRs := []net.IPNet{*cidr1, *cidr2}
-	
+	cidr1 := netip.MustParsePrefix("10.0.0.0/24")
+	cidr2 := netip.MustParsePrefix("fd00::/64")
+	podCIDRs := []netip.Prefix{cidr1, cidr2}
+
 	go func() {
 		podCIDRUpdates <- podCIDRs
 	}()
@@ -29,8 +29,8 @@ func TestSeparateChannelArchitecture(t *testing.T) {
 	policyRules := []firewall.NetworkPolicyRule{
 		{
 			Direction: "ingress",
-			PodIPs:    []net.IP{net.ParseIP("10.0.0.10")},
-			AllowedIPs: []net.IP{net.ParseIP("10.0.0.20")},
+			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.10")},
+			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.20")},
 			Ports:     []int{80},
 			Protocol:  "TCP",
 			Action:    "allow",
@@ -68,7 +68,7 @@ func TestSeparateChannelArchitecture(t *testing.T) {
 
 func TestFirewallManagerChannels(t *testing.T) {
 	// Test that firewall manager can be created with separate channels
-	podCIDRUpdates := make(chan []net.IPNet)
+	podCIDRUpdates := make(chan []netip.Prefix)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule)
 
 	manager := firewall.New(podCIDRUpdates, policyUpdates)

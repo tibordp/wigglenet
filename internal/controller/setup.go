@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
@@ -34,8 +34,8 @@ func setNodeAddressesAnnotation(node *v1.Node) error {
 	return nil
 }
 
-func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]net.IPNet, error) {
-	podsCidrs := make([]net.IPNet, 0)
+func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]netip.Prefix, error) {
+	podsCidrs := make([]netip.Prefix, 0)
 
 	switch source {
 	case config.SourceNone:
@@ -50,9 +50,9 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			if _, cidr, err := net.ParseCIDR(scanner.Text()); err == nil && cidr != nil {
-				if (cidr.IP.To4() == nil) == ipv6 {
-					podsCidrs = append(podsCidrs, *cidr)
+			if prefix, err := netip.ParsePrefix(scanner.Text()); err == nil {
+				if prefix.Addr().Is6() == ipv6 {
+					podsCidrs = append(podsCidrs, prefix)
 				}
 			} else {
 				klog.Infof("unrecognized '%v' in %v skipping", scanner.Text(), config.PodCidrSourceFilename)
@@ -65,7 +65,7 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 	case config.SourceSpec:
 		specPodCidrs := util.GetPodCIDRsFromSpec(node)
 		for _, cidr := range specPodCidrs {
-			if (cidr.IP.To4() == nil) == ipv6 {
+			if cidr.Addr().Is6() == ipv6 {
 				podsCidrs = append(podsCidrs, cidr)
 			}
 		}
@@ -83,7 +83,7 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 }
 
 func setPodCidrsAnnotation(node *v1.Node) error {
-	podCidrs := make([]net.IPNet, 0)
+	podCidrs := make([]netip.Prefix, 0)
 	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv6, true); err != nil {
 		return err
 	} else {
@@ -97,7 +97,7 @@ func setPodCidrsAnnotation(node *v1.Node) error {
 	}
 
 	podCidrs = util.SummarizeCIDRs(podCidrs)
-	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(podCidrs)
+	node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation] = annotation.MarshalPodCidrs(util.PrefixesToIPNets(podCidrs))
 
 	return nil
 }
