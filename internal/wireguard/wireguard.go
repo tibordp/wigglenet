@@ -102,15 +102,17 @@ func (c *wireguardManager) reconcileRoutes(addresses []netip.Addr, peersCIDRs []
 		return err
 	}
 
-	redundant := make(map[string]netlink.Route)
+	redundant := make(map[netip.Prefix]netlink.Route)
 	for _, route := range existingRoutes {
-		redundant[route.Dst.String()] = route
+		if prefix, ok := util.PrefixFromIPNet(*route.Dst); ok {
+			redundant[prefix] = route
+		}
 	}
 
 	missing := make([]netlink.Route, 0)
 	for _, cidr := range peersCIDRs {
-		if _, ok := redundant[cidr.String()]; ok {
-			delete(redundant, cidr.String())
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
 			netlinkCIDR := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Route{
@@ -127,8 +129,8 @@ func (c *wireguardManager) reconcileRoutes(addresses []netip.Addr, peersCIDRs []
 	// but the ptp plugin does it too, so I guess it's necessary.
 	for _, address := range addresses {
 		cidr := util.SingleHostCIDR(address)
-		if _, ok := redundant[cidr.String()]; ok {
-			delete(redundant, cidr.String())
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
 			netlinkCIDR := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Route{
@@ -162,17 +164,20 @@ func (c *wireguardManager) reconcileAddresses(addresses []netip.Addr) error {
 		return err
 	}
 
-	redundant := make(map[string]netlink.Addr)
+	redundant := make(map[netip.Prefix]netlink.Addr)
 	for _, addr := range existingAddresses {
-		redundant[addr.IPNet.String()] = addr
+		if prefix, ok := util.PrefixFromIPNet(*addr.IPNet); ok {
+			redundant[prefix] = addr
+		}
 	}
 
 	missing := make([]netlink.Addr, 0)
 	for _, desiredAddr := range addresses {
-		ipNet := util.PrefixToIPNet(util.SingleHostCIDR(desiredAddr))
-		if _, ok := redundant[ipNet.String()]; ok {
-			delete(redundant, ipNet.String())
+		cidr := util.SingleHostCIDR(desiredAddr)
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
+			ipNet := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Addr{
 				IPNet: &ipNet,
 			})
@@ -202,13 +207,15 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 	}
 
 	for i := range peer.PodCIDRs {
-		if existingPeer.AllowedIPs[i].String() != peer.PodCIDRs[i].String() {
+		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[i])
+		if !ok || existingPrefix != peer.PodCIDRs[i] {
 			return true
 		}
 	}
 
 	for i := range peer.NodeCIDRs {
-		if existingPeer.AllowedIPs[len(peer.PodCIDRs)+i].String() != peer.NodeCIDRs[i].String() {
+		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[len(peer.PodCIDRs)+i])
+		if !ok || existingPrefix != peer.NodeCIDRs[i] {
 			return true
 		}
 	}
@@ -226,9 +233,9 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 }
 
 func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
-	changeset := make(map[string]wgtypes.PeerConfig)
+	changeset := make(map[wgtypes.Key]wgtypes.PeerConfig)
 	for _, peer := range existingPeers {
-		changeset[peer.PublicKey.String()] = wgtypes.PeerConfig{
+		changeset[peer.PublicKey] = wgtypes.PeerConfig{
 			PublicKey:         peer.PublicKey,
 			Remove:            true,
 			AllowedIPs:        peer.AllowedIPs,
@@ -240,9 +247,9 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 	for _, peer := range desiredPeers {
 		var peerConfig wgtypes.PeerConfig
 		var ok bool
-		if peerConfig, ok = changeset[peer.PublicKey.String()]; ok {
+		if peerConfig, ok = changeset[peer.PublicKey]; ok {
 			if !peerNeedsUpdate(&peerConfig, &peer) {
-				delete(changeset, peer.PublicKey.String())
+				delete(changeset, peer.PublicKey)
 				continue
 			}
 			peerConfig.Remove = false
@@ -256,7 +263,7 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 		peerConfig.AllowedIPs = util.PrefixesToIPNets(peer.PodCIDRs)
 		peerConfig.AllowedIPs = append(peerConfig.AllowedIPs, util.PrefixesToIPNets(peer.NodeCIDRs)...)
 
-		changeset[peer.PublicKey.String()] = peerConfig
+		changeset[peer.PublicKey] = peerConfig
 	}
 
 	peerConfigs := make([]wgtypes.PeerConfig, 0)

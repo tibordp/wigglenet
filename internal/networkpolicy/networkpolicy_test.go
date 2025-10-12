@@ -314,25 +314,25 @@ func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 	assert.Len(t, denyRules, 4)
 
 	// Check that we have deny rules for both pods and both directions
-	podIPsWithIngressDeny := make(map[string]bool)
-	podIPsWithEgressDeny := make(map[string]bool)
+	podIPsWithIngressDeny := make(map[netip.Addr]bool)
+	podIPsWithEgressDeny := make(map[netip.Addr]bool)
 
 	for _, rule := range denyRules {
 		assert.Equal(t, "deny", rule.Action)
 		for _, podIP := range rule.PodIPs {
 			if rule.Direction == "ingress" {
-				podIPsWithIngressDeny[podIP.String()] = true
+				podIPsWithIngressDeny[podIP] = true
 			} else if rule.Direction == "egress" {
-				podIPsWithEgressDeny[podIP.String()] = true
+				podIPsWithEgressDeny[podIP] = true
 			}
 		}
 	}
 
 	// Both pod IPs should have ingress and egress deny rules
-	assert.True(t, podIPsWithIngressDeny["10.0.0.1"])
-	assert.True(t, podIPsWithIngressDeny["2001:db8::1"])
-	assert.True(t, podIPsWithEgressDeny["10.0.0.1"])
-	assert.True(t, podIPsWithEgressDeny["2001:db8::1"])
+	assert.True(t, podIPsWithIngressDeny[netip.MustParseAddr("10.0.0.1")])
+	assert.True(t, podIPsWithIngressDeny[netip.MustParseAddr("2001:db8::1")])
+	assert.True(t, podIPsWithEgressDeny[netip.MustParseAddr("10.0.0.1")])
+	assert.True(t, podIPsWithEgressDeny[netip.MustParseAddr("2001:db8::1")])
 }
 
 // fakeIndexer implements cache.Indexer interface for testing
