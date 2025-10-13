@@ -1,6 +1,7 @@
 package cni
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/netip"
@@ -58,7 +59,7 @@ type Range struct {
 }
 
 type CNIConfigWriter interface {
-	WriteCNIConfig(inputs CNIConfig) error
+	WriteCNIConfig(ctx context.Context, inputs CNIConfig, logger klog.Logger) error
 }
 
 type cniConfigWriter struct {
@@ -70,12 +71,12 @@ func NewCNIConfigWriter() CNIConfigWriter {
 }
 
 // WriteCNIConfig writes the
-func (c *cniConfigWriter) WriteCNIConfig(inputs CNIConfig) error {
+func (c *cniConfigWriter) WriteCNIConfig(ctx context.Context, inputs CNIConfig, logger klog.Logger) error {
 	if reflect.DeepEqual(inputs, c.lastConfig) {
 		return nil
 	}
 
-	klog.Infof("applying new CNI configuration: %v", inputs)
+	logger.Info("applying new CNI configuration", "config", inputs)
 
 	f, err := os.Create(config.CniConfigPath + ".temp")
 	if err != nil {

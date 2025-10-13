@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"strings"
@@ -66,21 +67,22 @@ func SingleHostCIDR(addr netip.Addr) netip.Prefix {
 	return prefix.Masked()
 }
 
-func GetPodCIDRsFromSpec(node *v1.Node) []netip.Prefix {
+func GetPodCIDRsFromSpec(ctx context.Context, node *v1.Node) []netip.Prefix {
+	logger := klog.FromContext(ctx)
 	cidrs := make([]netip.Prefix, 0, len(node.Spec.PodCIDRs))
 
 	if len(node.Spec.PodCIDRs) == 0 && node.Spec.PodCIDR != "" {
 		if prefix, err := netip.ParsePrefix(node.Spec.PodCIDR); err == nil {
 			cidrs = append(cidrs, prefix)
 		} else {
-			klog.Warningf("invalid CIDR prefix for node %v: %v", node.Name, node.Spec.PodCIDR)
+			logger.Info("invalid CIDR prefix for node", "node", node.Name, "cidr", node.Spec.PodCIDR, "error", err)
 		}
 	} else {
 		for _, v := range node.Spec.PodCIDRs {
 			if prefix, err := netip.ParsePrefix(v); err == nil {
 				cidrs = append(cidrs, prefix)
 			} else {
-				klog.Warningf("invalid CIDR prefix for node %v: %v", node.Name, v)
+				logger.Info("invalid CIDR prefix for node", "node", node.Name, "cidr", v, "error", err)
 			}
 		}
 	}
@@ -140,13 +142,19 @@ func GetPodNetworkLocalAddresses(podCIDRs []netip.Prefix) []netip.Addr {
 	return localAddresses
 }
 
-func GetInterfaceIPs(ifaces string) ([]netip.Addr, error) {
+func GetInterfaceIPs(ctx context.Context, ifaces string) ([]netip.Addr, error) {
+	logger := klog.FromContext(ctx)
 	ipAddresses := make([]netip.Addr, 0)
 
 	for _, ifaceName := range strings.Split(ifaces, ",") {
+		// Skip empty interface names
+		if ifaceName == "" {
+			continue
+		}
+
 		iface, err := net.InterfaceByName(ifaceName)
 		if err != nil {
-			klog.Warningf("interface %v not found, skipping", ifaceName)
+			logger.Info("interface not found, skipping", "interface", ifaceName, "error", err)
 			continue
 		}
 

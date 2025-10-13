@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tibordp/wigglenet/internal/firewall"
 	"github.com/stretchr/testify/assert"
+	"github.com/tibordp/wigglenet/internal/firewall"
 )
 
 func TestSeparateChannelArchitecture(t *testing.T) {
@@ -28,15 +28,15 @@ func TestSeparateChannelArchitecture(t *testing.T) {
 	// Send policy update
 	policyRules := []firewall.NetworkPolicyRule{
 		{
-			Direction: "ingress",
-			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.10")},
+			Direction:  "ingress",
+			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.10")},
 			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.20")},
-			Ports:     []int{80},
-			Protocol:  "TCP",
-			Action:    "allow",
+			Ports:      []int{80},
+			Protocol:   "TCP",
+			Action:     "allow",
 		},
 	}
-	
+
 	go func() {
 		policyUpdates <- policyRules
 	}()

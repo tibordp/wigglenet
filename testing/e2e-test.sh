@@ -114,7 +114,7 @@ check_iptables_backend() {
     local backend=""
 
     for node in $nodes; do
-        local node_backend=$(docker exec "${CLUSTER_NAME}-${node}" iptables --version | grep -oE '(nf_tables|legacy)')
+        local node_backend=$(docker exec "${node}" iptables --version | grep -oE '(nf_tables|legacy)')
 
         if [ -z "$backend" ]; then
             backend="$node_backend"
@@ -167,21 +167,58 @@ create_test_pods() {
 
     log_info "Scheduling pods on nodes: $worker1 and $worker2"
 
-    # Create pod on first worker
+    # Create client pod on first worker
     kubectl --context="kind-${CLUSTER_NAME}" run test-pod1 \
         --image=nicolaka/netshoot:latest \
         --overrides="{\"spec\":{\"nodeName\":\"$worker1\"}}" \
         --command -- sleep 3600
 
-    # Create pod on second worker
+    # Create server pod (nginx) on second worker with readiness probe
     kubectl --context="kind-${CLUSTER_NAME}" run test-pod2 \
-        --image=nicolaka/netshoot:latest \
-        --overrides="{\"spec\":{\"nodeName\":\"$worker2\"}}" \
-        --command -- sleep 3600
+        --image=nginx:alpine \
+        --overrides="{\"spec\":{\"nodeName\":\"$worker2\",\"containers\":[{\"name\":\"test-pod2\",\"image\":\"nginx:alpine\",\"readinessProbe\":{\"httpGet\":{\"path\":\"/\",\"port\":80},\"initialDelaySeconds\":1,\"periodSeconds\":1}}]}}"
 
     log_info "Waiting for test pods to be ready"
     kubectl --context="kind-${CLUSTER_NAME}" wait --for=condition=Ready pod/test-pod1 --timeout="${TIMEOUT}s"
     kubectl --context="kind-${CLUSTER_NAME}" wait --for=condition=Ready pod/test-pod2 --timeout="${TIMEOUT}s"
+}
+
+# Helper function to test HTTP connectivity to a target IP
+test_http_connectivity() {
+    local context="$1"
+    local source_pod="$2"
+    local namespace="$3"
+    local target_ip="$4"
+    local description="$5"
+    local required="$6"  # "true" or "false"
+
+    local url
+    if echo "$target_ip" | grep -q ':'; then
+        # IPv6 address - needs brackets
+        url="http://[$target_ip]"
+    else
+        # IPv4 address
+        url="http://$target_ip"
+    fi
+
+    local ns_flag=""
+    if [ -n "$namespace" ]; then
+        ns_flag="-n $namespace"
+    fi
+
+    log_info "Testing $description: $source_pod -> $target_ip"
+    if kubectl --context="$context" exec $ns_flag "$source_pod" -- curl -s --max-time 2 "$url" > /dev/null 2>&1; then
+        log_info "✓ $description connectivity successful"
+        return 0
+    else
+        if [ "$required" = "true" ]; then
+            log_error "✗ $description connectivity failed"
+            return 1
+        else
+            log_warn "⚠ $description connectivity failed (may be expected in some environments)"
+            return 0
+        fi
+    fi
 }
 
 # Test pod-to-pod connectivity
@@ -191,47 +228,30 @@ test_connectivity() {
     local context="kind-${CLUSTER_NAME}"
 
     # Get pod IPs
-    local pod1_ips=$(kubectl --context="$context" get pod test-pod1 -o jsonpath='{.status.podIPs[*].ip}')
     local pod2_ips=$(kubectl --context="$context" get pod test-pod2 -o jsonpath='{.status.podIPs[*].ip}')
-
-    log_info "test-pod1 IPs: $pod1_ips"
     log_info "test-pod2 IPs: $pod2_ips"
 
-    # Test IPv4 connectivity (pod1 -> pod2)
-    local pod2_ipv4=$(echo "$pod2_ips" | tr ' ' '\n' | grep -v ':' | head -n1)
-    if [ -n "$pod2_ipv4" ]; then
-        log_info "Testing IPv4: test-pod1 -> test-pod2 ($pod2_ipv4)"
-        if kubectl --context="$context" exec test-pod1 -- ping -c 3 -W 2 "$pod2_ipv4" > /dev/null 2>&1; then
-            log_info "✓ IPv4 connectivity successful"
+    # Test pod-to-pod connectivity for both IPv4 and IPv6
+    local tested_any=false
+    for ip in $pod2_ips; do
+        if echo "$ip" | grep -q ':'; then
+            test_http_connectivity "$context" "test-pod1" "" "$ip" "IPv6 HTTP (pod-to-pod)" "true" || return 1
+            tested_any=true
         else
-            log_error "✗ IPv4 connectivity failed"
-            return 1
+            test_http_connectivity "$context" "test-pod1" "" "$ip" "IPv4 HTTP (pod-to-pod)" "true" || return 1
+            tested_any=true
         fi
-    else
-        log_warn "No IPv4 address found for test-pod2"
+    done
+
+    if [ "$tested_any" = false ]; then
+        log_error "No IP addresses found for test-pod2"
+        return 1
     fi
 
-    # Test IPv6 connectivity (pod1 -> pod2)
-    local pod2_ipv6=$(echo "$pod2_ips" | tr ' ' '\n' | grep ':' | head -n1)
-    if [ -n "$pod2_ipv6" ]; then
-        log_info "Testing IPv6: test-pod1 -> test-pod2 ($pod2_ipv6)"
-        if kubectl --context="$context" exec test-pod1 -- ping -c 3 -W 2 "$pod2_ipv6" > /dev/null 2>&1; then
-            log_info "✓ IPv6 connectivity successful"
-        else
-            log_error "✗ IPv6 connectivity failed"
-            return 1
-        fi
-    else
-        log_warn "No IPv6 address found for test-pod2"
-    fi
-
-    # Test external connectivity
+    # Test external connectivity for both IPv4 and IPv6
     log_info "Testing external connectivity from test-pod1"
-    if kubectl --context="$context" exec test-pod1 -- ping -c 3 -W 2 8.8.8.8 > /dev/null 2>&1; then
-        log_info "✓ External IPv4 connectivity successful"
-    else
-        log_warn "⚠ External IPv4 connectivity failed (may be expected in some environments)"
-    fi
+    test_http_connectivity "$context" "test-pod1" "" "ipv4.google.com" "IPv4 HTTP (external)" "false"
+    test_http_connectivity "$context" "test-pod1" "" "ipv6.google.com" "IPv6 HTTP (external)" "false"
 }
 
 # Check for errors in wigglenet logs
@@ -260,6 +280,145 @@ check_wigglenet_logs() {
     fi
 }
 
+# Test NetworkPolicy enforcement
+test_network_policy() {
+    log_step "Testing NetworkPolicy enforcement"
+
+    local context="kind-${CLUSTER_NAME}"
+
+    # Create test namespace
+    log_info "Creating test namespace"
+    kubectl --context="$context" create namespace netpol-test
+
+    # Create three pods: client, allowed-server, denied-server
+    log_info "Creating test pods for NetworkPolicy"
+
+    # Client pod
+    kubectl --context="$context" run client -n netpol-test \
+        --image=nicolaka/netshoot:latest \
+        --labels="app=client" \
+        --command -- sleep 3600
+
+    # Allowed server pod - nginx with readiness probe
+    kubectl --context="$context" run allowed-server -n netpol-test \
+        --image=nginx:alpine \
+        --labels="app=server,role=allowed" \
+        --overrides='{"spec":{"containers":[{"name":"allowed-server","image":"nginx:alpine","readinessProbe":{"httpGet":{"path":"/","port":80},"initialDelaySeconds":1,"periodSeconds":1}}]}}'
+
+    # Denied server pod - nginx with readiness probe
+    kubectl --context="$context" run denied-server -n netpol-test \
+        --image=nginx:alpine \
+        --labels="app=server,role=denied" \
+        --overrides='{"spec":{"containers":[{"name":"denied-server","image":"nginx:alpine","readinessProbe":{"httpGet":{"path":"/","port":80},"initialDelaySeconds":1,"periodSeconds":1}}]}}'
+
+    log_info "Waiting for NetworkPolicy test pods to be ready"
+    kubectl --context="$context" wait --for=condition=Ready pod/client -n netpol-test --timeout="${TIMEOUT}s"
+    kubectl --context="$context" wait --for=condition=Ready pod/allowed-server -n netpol-test --timeout="${TIMEOUT}s"
+    kubectl --context="$context" wait --for=condition=Ready pod/denied-server -n netpol-test --timeout="${TIMEOUT}s"
+
+    # Get pod IPs (all IPs for dual-stack)
+    local allowed_ips=$(kubectl --context="$context" get pod allowed-server -n netpol-test -o jsonpath='{.status.podIPs[*].ip}')
+    local denied_ips=$(kubectl --context="$context" get pod denied-server -n netpol-test -o jsonpath='{.status.podIPs[*].ip}')
+
+    log_info "allowed-server IPs: $allowed_ips"
+    log_info "denied-server IPs: $denied_ips"
+
+    # Test connectivity before NetworkPolicy (should work for all IPs)
+    log_info "Testing connectivity before NetworkPolicy (baseline)"
+    for ip in $allowed_ips; do
+        local family="IPv4"
+        echo "$ip" | grep -q ':' && family="IPv6"
+        test_http_connectivity "$context" "client" "netpol-test" "$ip" "$family baseline (allowed-server)" "true" || return 1
+    done
+
+    for ip in $denied_ips; do
+        local family="IPv4"
+        echo "$ip" | grep -q ':' && family="IPv6"
+        test_http_connectivity "$context" "client" "netpol-test" "$ip" "$family baseline (denied-server)" "true" || return 1
+    done
+
+    # Apply NetworkPolicy that allows client->allowed-server but denies client->denied-server
+    log_info "Applying NetworkPolicy to restrict access"
+    cat <<EOF | kubectl --context="$context" apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-only-to-allowed-server
+  namespace: netpol-test
+spec:
+  podSelector:
+    matchLabels:
+      app: server
+      role: allowed
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: client
+    ports:
+    - protocol: TCP
+      port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-to-denied-server
+  namespace: netpol-test
+spec:
+  podSelector:
+    matchLabels:
+      app: server
+      role: denied
+  policyTypes:
+  - Ingress
+  # Empty ingress rules = deny all
+EOF
+
+    # Wait a bit for policy to be enforced
+    log_info "Waiting for NetworkPolicy to be enforced"
+    sleep 5
+
+    # Test connectivity after NetworkPolicy
+    log_info "Testing connectivity after NetworkPolicy"
+
+    # Should still reach allowed-server (for all IP families)
+    for ip in $allowed_ips; do
+        local family="IPv4"
+        echo "$ip" | grep -q ':' && family="IPv6"
+        test_http_connectivity "$context" "client" "netpol-test" "$ip" "$family after policy (allowed-server)" "true" || return 1
+    done
+
+    # Should NOT reach denied-server (for all IP families)
+    for ip in $denied_ips; do
+        local family="IPv4"
+        echo "$ip" | grep -q ':' && family="IPv6"
+
+        log_info "Testing $family after policy (denied-server): client -> $ip"
+        local url="http://$ip"
+        if echo "$ip" | grep -q ':'; then
+            url="http://[$ip]"
+        fi
+
+        if kubectl --context="$context" exec -n netpol-test client -- curl -s --max-time 2 "$url" > /dev/null 2>&1; then
+            log_error "✗ $family: Can still reach denied-server (policy not enforced)"
+            return 1
+        else
+            log_info "✓ $family: Cannot reach denied-server (policy denies correctly)"
+        fi
+    done
+
+    log_info "✓ NetworkPolicy enforcement working correctly for all IP families"
+}
+
+# Cleanup NetworkPolicy test resources
+cleanup_network_policy_test() {
+    log_step "Cleaning up NetworkPolicy test resources"
+
+    kubectl --context="kind-${CLUSTER_NAME}" delete namespace netpol-test --ignore-not-found=true --wait=false
+}
+
 # Cleanup test pods
 cleanup_test_pods() {
     log_step "Cleaning up test pods"
@@ -280,8 +439,10 @@ main() {
     verify_iptables_chains
     create_test_pods
     test_connectivity
+    test_network_policy
     check_wigglenet_logs
     cleanup_test_pods
+    cleanup_network_policy_test
 
     log_step "All tests passed! ✓"
     log_info "Run 'SKIP_CLEANUP=true $0' to keep the cluster for manual inspection"

@@ -22,8 +22,8 @@ import (
 	clientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
 )
 
-func setNodeAddressesAnnotation(node *v1.Node) error {
-	nodeAddresses, err := util.GetInterfaceIPs(config.NodeIPInterfaces)
+func setNodeAddressesAnnotation(ctx context.Context, node *v1.Node) error {
+	nodeAddresses, err := util.GetInterfaceIPs(ctx, config.NodeIPInterfaces)
 	if err != nil {
 		return err
 	}
@@ -34,7 +34,8 @@ func setNodeAddressesAnnotation(node *v1.Node) error {
 	return nil
 }
 
-func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]netip.Prefix, error) {
+func getPodCidrsForSource(ctx context.Context, node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]netip.Prefix, error) {
+	logger := klog.FromContext(ctx)
 	podsCidrs := make([]netip.Prefix, 0)
 
 	switch source {
@@ -55,7 +56,7 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 					podsCidrs = append(podsCidrs, prefix)
 				}
 			} else {
-				klog.Infof("unrecognized '%v' in %v skipping", scanner.Text(), config.PodCidrSourceFilename)
+				logger.Info("unrecognized CIDR in file, skipping", "cidr", scanner.Text(), "file", config.PodCidrSourceFilename, "error", err)
 			}
 		}
 
@@ -63,7 +64,7 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 			return nil, err
 		}
 	case config.SourceSpec:
-		specPodCidrs := util.GetPodCIDRsFromSpec(node)
+		specPodCidrs := util.GetPodCIDRsFromSpec(ctx, node)
 		for _, cidr := range specPodCidrs {
 			if cidr.Addr().Is6() == ipv6 {
 				podsCidrs = append(podsCidrs, cidr)
@@ -82,15 +83,15 @@ func getPodCidrsForSource(node *v1.Node, source config.PodCIDRSource, ipv6 bool)
 	return podsCidrs, nil
 }
 
-func setPodCidrsAnnotation(node *v1.Node) error {
+func setPodCidrsAnnotation(ctx context.Context, node *v1.Node) error {
 	podCidrs := make([]netip.Prefix, 0)
-	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv6, true); err != nil {
+	if cidrs, err := getPodCidrsForSource(ctx, node, config.PodCIDRSourceIPv6, true); err != nil {
 		return err
 	} else {
 		podCidrs = append(podCidrs, cidrs...)
 	}
 
-	if cidrs, err := getPodCidrsForSource(node, config.PodCIDRSourceIPv4, false); err != nil {
+	if cidrs, err := getPodCidrsForSource(ctx, node, config.PodCIDRSourceIPv4, false); err != nil {
 		return err
 	} else {
 		podCidrs = append(podCidrs, cidrs...)
@@ -114,11 +115,11 @@ func SetupNode(ctx context.Context, nodeClient clientv1.NodeInterface, publicKey
 			node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
 		}
 
-		if err := setNodeAddressesAnnotation(node); err != nil {
+		if err := setNodeAddressesAnnotation(ctx, node); err != nil {
 			return err
 		}
 
-		if err := setPodCidrsAnnotation(node); err != nil {
+		if err := setPodCidrsAnnotation(ctx, node); err != nil {
 			return err
 		}
 

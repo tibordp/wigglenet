@@ -19,11 +19,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Create logger and add to context
+	logger := klog.NewKlogr()
+	ctx = klog.NewContext(ctx, logger)
+
 	wigglenet, err := wigglenet.New(ctx)
 	if err != nil {
 		klog.Fatal(err)
 	}
 
 	wigglenet.Run(ctx)
-	klog.Info("gracefully terminated")
+	logger.Info("gracefully terminated")
 }

@@ -4,16 +4,18 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/tibordp/wigglenet/internal/firewall"
 	"github.com/stretchr/testify/assert"
+	"github.com/tibordp/wigglenet/internal/firewall"
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2/ktesting"
 )
 
 func TestSelectPods(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	c := &controller{
 		pods: map[netip.Addr]PodInfo{
 			netip.MustParseAddr("10.0.0.1"): {
@@ -38,12 +40,12 @@ func TestSelectPods(t *testing.T) {
 	selector := metav1.LabelSelector{
 		MatchLabels: map[string]string{"app": "web"},
 	}
-	selected := c.selectPods("default", selector)
+	selected := c.selectPods(ctx, "default", selector)
 	assert.Len(t, selected, 1)
 	assert.Equal(t, "10.0.0.1", selected[0].IP.String())
 
 	// Test selecting pods in different namespace
-	selected = c.selectPods("kube-system", selector)
+	selected = c.selectPods(ctx, "kube-system", selector)
 	assert.Len(t, selected, 1)
 	assert.Equal(t, "10.0.0.3", selected[0].IP.String())
 
@@ -51,7 +53,7 @@ func TestSelectPods(t *testing.T) {
 	selector = metav1.LabelSelector{
 		MatchLabels: map[string]string{"app": "web", "tier": "frontend"},
 	}
-	selected = c.selectPods("default", selector)
+	selected = c.selectPods(ctx, "default", selector)
 	assert.Len(t, selected, 1)
 	assert.Equal(t, "10.0.0.1", selected[0].IP.String())
 
@@ -59,11 +61,12 @@ func TestSelectPods(t *testing.T) {
 	selector = metav1.LabelSelector{
 		MatchLabels: map[string]string{"app": "nonexistent"},
 	}
-	selected = c.selectPods("default", selector)
+	selected = c.selectPods(ctx, "default", selector)
 	assert.Len(t, selected, 0)
 }
 
 func TestBuildIngressRule(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	c := &controller{
 		pods: map[netip.Addr]PodInfo{
 			netip.MustParseAddr("10.0.0.1"): {
@@ -105,7 +108,7 @@ func TestBuildIngressRule(t *testing.T) {
 		},
 	}
 
-	rule := c.buildIngressRule(selectedPods, ingressRule, "default")
+	rule := c.buildIngressRule(ctx, selectedPods, ingressRule, "default")
 	assert.NotNil(t, rule)
 	assert.Equal(t, "ingress", rule.Direction)
 	assert.Equal(t, "allow", rule.Action)
@@ -119,6 +122,7 @@ func TestBuildIngressRule(t *testing.T) {
 }
 
 func TestBuildEgressRule(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	c := &controller{
 		pods: map[netip.Addr]PodInfo{
 			netip.MustParseAddr("10.0.0.1"): {
@@ -144,7 +148,7 @@ func TestBuildEgressRule(t *testing.T) {
 		},
 	}
 
-	rule := c.buildEgressRule(selectedPods, egressRule, "default")
+	rule := c.buildEgressRule(ctx, selectedPods, egressRule, "default")
 	assert.NotNil(t, rule)
 	assert.Equal(t, "egress", rule.Direction)
 	assert.Equal(t, "allow", rule.Action)
@@ -155,6 +159,7 @@ func TestBuildEgressRule(t *testing.T) {
 }
 
 func TestProcessNetworkPolicyPeer(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	c := &controller{
 		pods: map[netip.Addr]PodInfo{
 			netip.MustParseAddr("10.0.0.1"): {
@@ -184,7 +189,7 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 			MatchLabels: map[string]string{"app": "web"},
 		},
 	}
-	c.processNetworkPolicyPeer(peer, rule, "default")
+	c.processNetworkPolicyPeer(ctx, peer, rule, "default")
 	assert.Len(t, rule.AllowedIPs, 1)
 	assert.Equal(t, "10.0.0.1", rule.AllowedIPs[0].String())
 
@@ -197,7 +202,7 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 			MatchLabels: map[string]string{"name": "kube-system"},
 		},
 	}
-	c.processNetworkPolicyPeer(peer, rule, "default")
+	c.processNetworkPolicyPeer(ctx, peer, rule, "default")
 	assert.Len(t, rule.AllowedIPs, 1)
 	assert.Equal(t, "10.0.0.2", rule.AllowedIPs[0].String())
 
@@ -211,12 +216,13 @@ func TestProcessNetworkPolicyPeer(t *testing.T) {
 			CIDR: "192.168.0.0/16",
 		},
 	}
-	c.processNetworkPolicyPeer(peer, rule, "default")
+	c.processNetworkPolicyPeer(ctx, peer, rule, "default")
 	assert.Len(t, rule.AllowedCIDRs, 1)
 	assert.Equal(t, "192.168.0.0/16", rule.AllowedCIDRs[0].String())
 }
 
 func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	c := &controller{
 		pods: map[netip.Addr]PodInfo{
 			netip.MustParseAddr("10.0.0.1"): {
@@ -292,7 +298,7 @@ func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 		},
 	}
 
-	rules, err := c.generatePolicyRules()
+	rules, err := c.generatePolicyRules(ctx)
 	assert.NoError(t, err)
 
 	// Should have allow rules + deny rules
@@ -344,10 +350,10 @@ func (f *fakeIndexer) List() []interface{} {
 	return f.items
 }
 
-func (f *fakeIndexer) Add(obj interface{}) error { return nil }
+func (f *fakeIndexer) Add(obj interface{}) error    { return nil }
 func (f *fakeIndexer) Update(obj interface{}) error { return nil }
 func (f *fakeIndexer) Delete(obj interface{}) error { return nil }
-func (f *fakeIndexer) ListKeys() []string { return nil }
+func (f *fakeIndexer) ListKeys() []string           { return nil }
 func (f *fakeIndexer) Get(obj interface{}) (item interface{}, exists bool, err error) {
 	return nil, false, nil
 }
@@ -360,9 +366,9 @@ func (f *fakeIndexer) Index(indexName string, obj interface{}) ([]interface{}, e
 	return nil, nil
 }
 func (f *fakeIndexer) IndexKeys(indexName, indexKey string) ([]string, error) { return nil, nil }
-func (f *fakeIndexer) ListIndexFuncValues(indexName string) []string            { return nil }
+func (f *fakeIndexer) ListIndexFuncValues(indexName string) []string          { return nil }
 func (f *fakeIndexer) ByIndex(indexName, indexKey string) ([]interface{}, error) {
 	return nil, nil
 }
-func (f *fakeIndexer) GetIndexers() cache.Indexers { return nil }
+func (f *fakeIndexer) GetIndexers() cache.Indexers                  { return nil }
 func (f *fakeIndexer) AddIndexers(newIndexers cache.Indexers) error { return nil }

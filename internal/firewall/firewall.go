@@ -96,8 +96,9 @@ func New(podCIDRUpdates chan []netip.Prefix, policyUpdates chan []NetworkPolicyR
 }
 
 func (c *firewallManager) Run(ctx context.Context) {
-	klog.Infof("started syncing firewall rules")
-	defer klog.Infof("finished syncing firewall rules")
+	logger := klog.FromContext(ctx)
+	logger.Info("started syncing firewall rules")
+	defer logger.Info("finished syncing firewall rules")
 
 	timer := time.NewTimer(0)
 	for {
@@ -110,7 +111,7 @@ func (c *firewallManager) Run(ctx context.Context) {
 			timer.Reset(syncInterval)
 		case newPodCIDRs := <-c.podCIDRUpdates:
 			if !reflect.DeepEqual(newPodCIDRs, c.currentPodCIDRs) {
-				klog.Infof("received new pod CIDR configuration")
+				logger.Info("received new pod CIDR configuration")
 				if !timer.Stop() {
 					<-timer.C
 				}
@@ -119,7 +120,7 @@ func (c *firewallManager) Run(ctx context.Context) {
 			}
 		case newPolicies := <-c.policyUpdates:
 			if !reflect.DeepEqual(newPolicies, c.currentPolicies) {
-				klog.Infof("received new NetworkPolicy configuration")
+				logger.Info("received new NetworkPolicy configuration")
 				if !timer.Stop() {
 					<-timer.C
 				}
@@ -128,15 +129,15 @@ func (c *firewallManager) Run(ctx context.Context) {
 			}
 		}
 
-		err := c.syncRules()
+		err := c.syncRules(ctx)
 		if err != nil {
 			// Just log the error, we will retry in one minute if transient
-			klog.Errorf("failed to sync firewall rules: %v", err)
+			logger.Error(err, "failed to sync firewall rules")
 		}
 	}
 }
 
-func (c *firewallManager) syncRules() error {
+func (c *firewallManager) syncRules(ctx context.Context) error {
 	ip4cidrs := make([]netip.Prefix, 0)
 	ip6cidrs := make([]netip.Prefix, 0)
 
@@ -174,26 +175,26 @@ func (c *firewallManager) syncRules() error {
 
 	// Apply IPv6 filter rules if filtering is enabled OR if NetworkPolicy is enabled
 	if config.FilterIPv6 || config.EnableNetworkPolicy {
-		if err := c.syncFilterRules(c.ip6tables, ip6cidrs, ip6PolicyRules, true, config.EnableNetworkPolicy); err != nil {
+		if err := c.syncFilterRules(ctx, c.ip6tables, ip6cidrs, ip6PolicyRules, true, config.EnableNetworkPolicy); err != nil {
 			return err
 		}
 	}
 
 	// Apply IPv4 filter rules if filtering is enabled OR if NetworkPolicy is enabled
 	if config.FilterIPv4 || config.EnableNetworkPolicy {
-		if err := c.syncFilterRules(c.ip4tables, ip4cidrs, ip4PolicyRules, false, config.EnableNetworkPolicy); err != nil {
+		if err := c.syncFilterRules(ctx, c.ip4tables, ip4cidrs, ip4PolicyRules, false, config.EnableNetworkPolicy); err != nil {
 			return err
 		}
 	}
 
 	if config.MasqueradeIPv6 {
-		if err := c.syncMasqueradeRules(c.ip6tables, ip6cidrs); err != nil {
+		if err := c.syncMasqueradeRules(ctx, c.ip6tables, ip6cidrs); err != nil {
 			return err
 		}
 	}
 
 	if config.MasqueradeIPv4 {
-		if err := c.syncMasqueradeRules(c.ip4tables, ip4cidrs); err != nil {
+		if err := c.syncMasqueradeRules(ctx, c.ip4tables, ip4cidrs); err != nil {
 			return err
 		}
 	}
@@ -201,7 +202,8 @@ func (c *firewallManager) syncRules() error {
 	return nil
 }
 
-func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []netip.Prefix) error {
+func (c *firewallManager) syncMasqueradeRules(ctx context.Context, tables ipTables, nonMasqCidrs []netip.Prefix) error {
+	_ = ctx // context not needed for this function, but keeping signature consistent
 	if _, err := tables.EnsureChain(ipt.TableNAT, natChain); err != nil {
 		return err
 	}
@@ -230,7 +232,8 @@ func (c *firewallManager) syncMasqueradeRules(tables ipTables, nonMasqCidrs []ne
 	return nil
 }
 
-func (c *firewallManager) syncFilterRules(tables ipTables, nonFilterCidrs []netip.Prefix, policyRules []NetworkPolicyRule, isIPv6 bool, enableNetworkPolicy bool) error {
+func (c *firewallManager) syncFilterRules(ctx context.Context, tables ipTables, nonFilterCidrs []netip.Prefix, policyRules []NetworkPolicyRule, isIPv6 bool, enableNetworkPolicy bool) error {
+	_ = ctx // context not needed for this function, but keeping signature consistent
 	// Determine if we need global filtering (based on config) or just NetworkPolicy filtering
 	enableGlobalFiltering := (isIPv6 && config.FilterIPv6) || (!isIPv6 && config.FilterIPv4)
 

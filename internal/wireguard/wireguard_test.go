@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"k8s.io/klog/v2/ktesting"
 )
 
 func parseKey(s string) wgtypes.Key {
@@ -48,7 +49,9 @@ func TestCreateChangesetNoChange(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Len(t, actual, 0)
 }
@@ -103,7 +106,9 @@ func TestCreateChangesetAdd(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }
@@ -138,7 +143,9 @@ func TestCreateChangesetRemove(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }
@@ -186,7 +193,9 @@ func TestCreateChangesetUpdate(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }

@@ -33,7 +33,7 @@ type Controller interface {
 
 type controller struct {
 	indexer        cache.Indexer
-	queue          workqueue.RateLimitingInterface
+	queue          workqueue.TypedRateLimitingInterface[string]
 	informer       cache.Controller
 	wireguard      wireguard.Manager
 	cniwriter      cni.CNIConfigWriter
@@ -42,7 +42,7 @@ type controller struct {
 
 func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []netip.Prefix) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
@@ -76,9 +76,9 @@ func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Ma
 
 // processChanges gets called on any change to a node object as well as additions and removals.
 // it computes the new state of the world and adjust the local networking setup accordingly
-func (c *controller) processChanges(key interface{}) error {
+func (c *controller) processChanges(ctx context.Context, key string) error {
 	if !config.FirewallOnly && !config.NativeRouting {
-		if err := c.applyWireguardConfiguration(); err != nil {
+		if err := c.applyWireguardConfiguration(ctx); err != nil {
 			return err
 		}
 	}
@@ -88,7 +88,7 @@ func (c *controller) processChanges(key interface{}) error {
 	}
 
 	if !config.FirewallOnly && key == config.CurrentNodeName {
-		if err := c.ensureCNI(); err != nil {
+		if err := c.ensureCNI(ctx); err != nil {
 			return err
 		}
 	}
@@ -114,7 +114,8 @@ func (c *controller) applyFirewallRules() error {
 
 // applyWireguardConfiguration configures the Wireguard network interface and makes
 // appropriate changes to the routing table.
-func (c *controller) applyWireguardConfiguration() error {
+func (c *controller) applyWireguardConfiguration(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
 
 	peers := make([]wireguard.Peer, 0)
 	localAddresses := make([]netip.Addr, 0)
@@ -125,7 +126,7 @@ func (c *controller) applyWireguardConfiguration() error {
 				podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 				localAddresses = util.GetPodNetworkLocalAddresses(podCIDRs)
 			} else {
-				peer := makePeer(node)
+				peer := makePeer(ctx, node)
 				if peer != nil {
 					peers = append(peers, *peer)
 				}
@@ -134,19 +135,20 @@ func (c *controller) applyWireguardConfiguration() error {
 	}
 
 	config := wireguard.NewConfig(localAddresses, peers)
-	return c.wireguard.ApplyConfiguration(&config)
+	return c.wireguard.ApplyConfiguration(ctx, &config, logger)
 }
 
 // ensureCNI writes the local CNI configuration to /etc/cni/net.d if there were
 // relevant changes to pod CIDRs. This can change during the lifetime of the node,
 // e.g. if another address family is added to an existing cluster.
-func (c *controller) ensureCNI() error {
+func (c *controller) ensureCNI(ctx context.Context) error {
+	logger := klog.FromContext(ctx)
 	item, exists, _ := c.indexer.GetByKey(config.CurrentNodeName)
 	if node, ok := item.(*v1.Node); exists && ok {
 		podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 
 		if len(podCIDRs) == 0 {
-			klog.Infof("node %v does not have PodCIDRs assigned yet", node.Name)
+			logger.Info("node does not have PodCIDRs assigned yet", "node", node.Name)
 			return nil
 		}
 
@@ -154,17 +156,18 @@ func (c *controller) ensureCNI() error {
 			PodCIDRs: podCIDRs,
 		}
 
-		return c.cniwriter.WriteCNIConfig(config)
+		return c.cniwriter.WriteCNIConfig(ctx, config, logger)
 	}
 
 	return nil
 }
 
-func getNodeAddresses(node *v1.Node) ([]netip.Addr, error) {
+func getNodeAddresses(ctx context.Context, node *v1.Node) ([]netip.Addr, error) {
+	logger := klog.FromContext(ctx)
 	var annotationAddresses []netip.Addr
 	err := json.Unmarshal([]byte(node.Annotations[annotation.NodeIpsAnnotation]), &annotationAddresses)
 	if annotationAddresses == nil || err != nil {
-		klog.Warningf("invalid node-ips %v", node.Annotations[annotation.NodeIpsAnnotation])
+		logger.Info("invalid node-ips annotation", "node", node.Name, "annotation", node.Annotations[annotation.NodeIpsAnnotation])
 		return nil, err
 	}
 
@@ -191,7 +194,8 @@ func getNodeAddresses(node *v1.Node) ([]netip.Addr, error) {
 	return nodeAddresses, nil
 }
 
-func makePeer(node *v1.Node) *wireguard.Peer {
+func makePeer(ctx context.Context, node *v1.Node) *wireguard.Peer {
+	logger := klog.FromContext(ctx)
 	publicKeyStr := node.Annotations[annotation.PublicKeyAnnotation]
 	if publicKeyStr == "" {
 		// If we return here, the node is simply not initialized yet, which is normal,
@@ -201,19 +205,19 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 
 	podCIDRs := util.GetPodCIDRsFromAnnotation(node)
 	if len(podCIDRs) == 0 {
-		klog.Warningf("node %v does not have PodCIDRs assigned yet", node.Name)
+		logger.Info("node does not have PodCIDRs assigned yet", "node", node.Name)
 		return nil
 	}
 
 	publicKey, err := wgtypes.ParseKey(publicKeyStr)
 	if err != nil {
-		klog.Warningf("invalid public key for node %v", node.Name)
+		logger.Info("invalid public key for node", "node", node.Name, "error", err)
 		return nil
 	}
 
-	nodeAddresses, err := getNodeAddresses(node)
+	nodeAddresses, err := getNodeAddresses(ctx, node)
 	if err != nil || len(nodeAddresses) == 0 {
-		klog.Warningf("could not determine node addresses for %v", node.Name)
+		logger.Info("could not determine node addresses", "node", node.Name, "error", err)
 		return nil
 	}
 
@@ -224,7 +228,7 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 
 	peerEndpoint := util.SelectIP(nodeAddresses, config.WireguardIPFamily)
 	if peerEndpoint == nil {
-		klog.Warningf("could not determine peer endpoint for %v", node.Name)
+		logger.Info("could not determine peer endpoint", "node", node.Name)
 		return nil
 	}
 
@@ -238,30 +242,13 @@ func makePeer(node *v1.Node) *wireguard.Peer {
 	return peer
 }
 
-func (c *controller) handleErr(err error, key interface{}) {
-	if err == nil {
-		c.queue.Forget(key)
-		return
-	}
-
-	if c.queue.NumRequeues(key) < 5 {
-		klog.Infof("error syncing node %v: %v", key, err)
-		c.queue.AddRateLimited(key)
-		return
-	}
-
-	c.queue.Forget(key)
-	runtime.HandleError(err)
-
-	klog.Warningf("dropping node %q out of the queue: %v", key, err)
-}
-
 func (c *controller) Run(ctx context.Context) {
 	defer runtime.HandleCrash()
+	logger := klog.FromContext(ctx)
 
 	// Let the workers stop when we are done
 	defer c.queue.ShutDown()
-	klog.Info("starting controller")
+	logger.Info("starting controller")
 
 	go c.informer.Run(ctx.Done())
 
@@ -272,17 +259,17 @@ func (c *controller) Run(ctx context.Context) {
 	}
 
 	// After we have all the nodes in cache, sync the routing state
-	if err := c.applyWireguardConfiguration(); err != nil {
+	if err := c.applyWireguardConfiguration(ctx); err != nil {
 		runtime.HandleError(err)
 	}
 
-	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 	<-ctx.Done()
 
-	klog.Info("finished controller")
+	logger.Info("finished controller")
 }
 
-func (c *controller) processNextItem() bool {
+func (c *controller) processNextItem(ctx context.Context) bool {
 	key, quit := c.queue.Get()
 	if quit {
 		return false
@@ -290,11 +277,18 @@ func (c *controller) processNextItem() bool {
 
 	defer c.queue.Done(key)
 
-	c.handleErr(c.processChanges(key), key)
+	err := c.processChanges(ctx, key)
+	if err == nil {
+		c.queue.Forget(key)
+		return true
+	}
+
+	runtime.HandleErrorWithContext(ctx, err, "Error syncing node; requeuing for later retry", "node", key)
+	c.queue.AddRateLimited(key)
 	return true
 }
 
-func (c *controller) runWorker() {
-	for c.processNextItem() {
+func (c *controller) runWorker(ctx context.Context) {
+	for c.processNextItem(ctx) {
 	}
 }

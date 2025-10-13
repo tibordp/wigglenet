@@ -1,6 +1,7 @@
 package wireguard
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ func (wg *wireguardLink) Type() string {
 }
 
 type Manager interface {
-	ApplyConfiguration(config *WireguardConfig) error
+	ApplyConfiguration(ctx context.Context, config *WireguardConfig, logger klog.Logger) error
 	PublicKey() []byte
 }
 
@@ -95,7 +96,7 @@ func getPeerCIDRs(peers []Peer) []netip.Prefix {
 	return util.SummarizeCIDRs(routes)
 }
 
-func (c *wireguardManager) reconcileRoutes(addresses []netip.Addr, peersCIDRs []netip.Prefix) error {
+func (c *wireguardManager) reconcileRoutes(logger klog.Logger, addresses []netip.Addr, peersCIDRs []netip.Prefix) error {
 	// Find all directly attached routes to the wireguard interface
 	existingRoutes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, &netlink.Route{LinkIndex: c.link.Attrs().Index}, netlink.RT_FILTER_OIF)
 	if err != nil {
@@ -142,14 +143,14 @@ func (c *wireguardManager) reconcileRoutes(addresses []netip.Addr, peersCIDRs []
 	}
 
 	for _, v := range missing {
-		klog.Infof("adding route %v", v)
+		logger.Info("adding route", "route", v)
 		if err := netlink.RouteAdd(&v); err != nil {
 			return err
 		}
 	}
 
 	for _, v := range redundant {
-		klog.Infof("removing route %v", v)
+		logger.Info("removing route", "route", v)
 		if err := netlink.RouteDel(&v); err != nil {
 			return err
 		}
@@ -158,7 +159,7 @@ func (c *wireguardManager) reconcileRoutes(addresses []netip.Addr, peersCIDRs []
 	return nil
 }
 
-func (c *wireguardManager) reconcileAddresses(addresses []netip.Addr) error {
+func (c *wireguardManager) reconcileAddresses(logger klog.Logger, addresses []netip.Addr) error {
 	existingAddresses, err := netlink.AddrList(c.link, nl.FAMILY_ALL)
 	if err != nil {
 		return err
@@ -185,14 +186,14 @@ func (c *wireguardManager) reconcileAddresses(addresses []netip.Addr) error {
 	}
 
 	for _, v := range missing {
-		klog.Infof("adding address %v", v)
+		logger.Info("adding address", "address", v)
 		if err := netlink.AddrAdd(c.link, &v); err != nil {
 			return err
 		}
 	}
 
 	for _, v := range redundant {
-		klog.Infof("removing address %v", v)
+		logger.Info("removing address", "address", v)
 		if err := netlink.AddrDel(c.link, &v); err != nil {
 			return err
 		}
@@ -232,7 +233,7 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 	return false
 }
 
-func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
+func createPeerChangeset(logger klog.Logger, existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
 	changeset := make(map[wgtypes.Key]wgtypes.PeerConfig)
 	for _, peer := range existingPeers {
 		changeset[peer.PublicKey] = wgtypes.PeerConfig{
@@ -269,11 +270,11 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 	peerConfigs := make([]wgtypes.PeerConfig, 0)
 	for _, v := range changeset {
 		if v.Remove {
-			klog.Infof("removing peer %v", v.PublicKey.String())
+			logger.Info("removing peer", "publicKey", v.PublicKey.String())
 		} else if v.UpdateOnly {
-			klog.Infof("updating peer %v", v.PublicKey.String())
+			logger.Info("updating peer", "publicKey", v.PublicKey.String())
 		} else {
-			klog.Infof("adding peer %v", v.PublicKey.String())
+			logger.Info("adding peer", "publicKey", v.PublicKey.String())
 		}
 		peerConfigs = append(peerConfigs, v)
 	}
@@ -281,13 +282,13 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 	return peerConfigs
 }
 
-func (c *wireguardManager) reconcileWireguardPeers(peers []Peer) error {
+func (c *wireguardManager) reconcileWireguardPeers(logger klog.Logger, peers []Peer) error {
 	device, err := c.wgctrl.Device(c.link.Attrs().Name)
 	if err != nil {
 		return err
 	}
 
-	peerConfigs := createPeerChangeset(device.Peers, peers)
+	peerConfigs := createPeerChangeset(logger, device.Peers, peers)
 
 	if len(peerConfigs) > 0 {
 		if err := c.wgctrl.ConfigureDevice(device.Name, wgtypes.Config{
@@ -302,22 +303,22 @@ func (c *wireguardManager) reconcileWireguardPeers(peers []Peer) error {
 	return nil
 }
 
-func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
+func (c *wireguardManager) ApplyConfiguration(ctx context.Context, config *WireguardConfig, logger klog.Logger) error {
 	if reflect.DeepEqual(config, c.lastAppliedConfig) {
 		return nil
 	}
 
-	klog.Infof("applying new Wireguard configuration")
-	if err := c.reconcileWireguardPeers(config.Peers); err != nil {
+	logger.Info("applying new Wireguard configuration")
+	if err := c.reconcileWireguardPeers(logger, config.Peers); err != nil {
 		return err
 	}
 
-	if err := c.reconcileAddresses(config.Addresses); err != nil {
+	if err := c.reconcileAddresses(logger, config.Addresses); err != nil {
 		return err
 	}
 
 	peersCIDRs := getPeerCIDRs(config.Peers)
-	if err := c.reconcileRoutes(config.Addresses, peersCIDRs); err != nil {
+	if err := c.reconcileRoutes(logger, config.Addresses, peersCIDRs); err != nil {
 		return err
 	}
 
@@ -325,10 +326,11 @@ func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
 	return nil
 }
 
-func ensureWgLink() (netlink.Link, error) {
+func ensureWgLink(ctx context.Context) (netlink.Link, error) {
+	logger := klog.FromContext(ctx)
 	link, err := netlink.LinkByName(config.WGLinkName)
 	if _, ok := err.(netlink.LinkNotFoundError); ok {
-		klog.Infof("device %q does not exist, creating it", config.WGLinkName)
+		logger.Info("device does not exist, creating it", "device", config.WGLinkName)
 		newLink := wireguardLink{LinkAttrs: netlink.LinkAttrs{Name: config.WGLinkName}}
 		if err := netlink.LinkAdd(&newLink); err != nil {
 			return nil, err
@@ -347,12 +349,13 @@ func ensureWgLink() (netlink.Link, error) {
 	return link, nil
 }
 
-func ensurePrivateKey() (*wgtypes.Key, error) {
+func ensurePrivateKey(ctx context.Context) (*wgtypes.Key, error) {
+	logger := klog.FromContext(ctx)
 	privateKey := wgtypes.Key{}
 
 	file, err := os.Open(config.PrivateKeyFilename)
 	if os.IsNotExist(err) {
-		klog.Infof("wireguard private key not found, generating a new one")
+		logger.Info("wireguard private key not found, generating a new one")
 		privateKey, err = wgtypes.GeneratePrivateKey()
 		if err != nil {
 			return nil, err
@@ -393,8 +396,8 @@ func ensurePrivateKey() (*wgtypes.Key, error) {
 	return &privateKey, nil
 }
 
-func NewManager() (Manager, error) {
-	privateKey, err := ensurePrivateKey()
+func NewManager(ctx context.Context) (Manager, error) {
+	privateKey, err := ensurePrivateKey(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +407,7 @@ func NewManager() (Manager, error) {
 		return nil, err
 	}
 
-	link, err := ensureWgLink()
+	link, err := ensureWgLink(ctx)
 	if err != nil {
 		return nil, err
 	}

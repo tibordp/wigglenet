@@ -47,11 +47,11 @@ type controller struct {
 	nsIndexer  cache.Indexer
 	nsInformer cache.Controller
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	// Current state
-	pods       map[netip.Addr]PodInfo              // podIP -> PodInfo
-	namespaces map[string]map[string]string        // namespace -> labels
+	pods       map[netip.Addr]PodInfo       // podIP -> PodInfo
+	namespaces map[string]map[string]string // namespace -> labels
 }
 
 func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall.NetworkPolicyRule) Controller {
@@ -79,7 +79,7 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 		fields.Everything(),
 	)
 
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 
 	// Create indexers and informers
 	netpolIndexer, netpolInformer := cache.NewIndexerInformer(
@@ -119,25 +119,26 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 	)
 
 	return &controller{
-		clientset:     clientset,
-		policyUpdates: policyUpdates,
-		netpolIndexer: netpolIndexer,
+		clientset:      clientset,
+		policyUpdates:  policyUpdates,
+		netpolIndexer:  netpolIndexer,
 		netpolInformer: netpolInformer,
-		podIndexer:    podIndexer,
-		podInformer:   podInformer,
-		nsIndexer:     nsIndexer,
-		nsInformer:    nsInformer,
-		queue:         queue,
-		pods:          make(map[netip.Addr]PodInfo),
-		namespaces:    make(map[string]map[string]string),
+		podIndexer:     podIndexer,
+		podInformer:    podInformer,
+		nsIndexer:      nsIndexer,
+		nsInformer:     nsInformer,
+		queue:          queue,
+		pods:           make(map[netip.Addr]PodInfo),
+		namespaces:     make(map[string]map[string]string),
 	}
 }
 
 func (c *controller) Run(ctx context.Context) {
 	defer runtime.HandleCrash()
 	defer c.queue.ShutDown()
+	logger := klog.FromContext(ctx)
 
-	klog.Info("starting NetworkPolicy controller")
+	logger.Info("starting NetworkPolicy controller")
 
 	// Start informers
 	go c.netpolInformer.Run(ctx.Done())
@@ -154,44 +155,38 @@ func (c *controller) Run(ctx context.Context) {
 	}
 
 	// Initial sync
-	c.syncState()
+	c.syncState(ctx)
 
-	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 	<-ctx.Done()
 
-	klog.Info("finished NetworkPolicy controller")
+	logger.Info("finished NetworkPolicy controller")
 }
 
-func (c *controller) runWorker() {
-	for c.processNextItem() {
+func (c *controller) runWorker(ctx context.Context) {
+	for c.processNextItem(ctx) {
 	}
 }
 
-func (c *controller) processNextItem() bool {
+func (c *controller) processNextItem(ctx context.Context) bool {
 	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
 	defer c.queue.Done(key)
 
-	err := c.syncState()
-	if err != nil {
-		if c.queue.NumRequeues(key) < 5 {
-			klog.Infof("error syncing NetworkPolicy state: %v", err)
-			c.queue.AddRateLimited(key)
-			return true
-		}
+	err := c.syncState(ctx)
+	if err == nil {
 		c.queue.Forget(key)
-		runtime.HandleError(err)
-		klog.Warningf("dropping NetworkPolicy key %q out of the queue: %v", key, err)
-	} else {
-		c.queue.Forget(key)
+		return true
 	}
 
+	runtime.HandleErrorWithContext(ctx, err, "Error syncing NetworkPolicy; requeuing for later retry", "key", key)
+	c.queue.AddRateLimited(key)
 	return true
 }
 
-func (c *controller) syncState() error {
+func (c *controller) syncState(ctx context.Context) error {
 	// Update pods map
 	c.updatePodsMap()
 
@@ -199,7 +194,7 @@ func (c *controller) syncState() error {
 	c.updateNamespacesMap()
 
 	// Generate NetworkPolicy rules
-	policyRules, err := c.generatePolicyRules()
+	policyRules, err := c.generatePolicyRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -258,7 +253,7 @@ func (c *controller) updateNamespacesMap() {
 	c.namespaces = newNamespaces
 }
 
-func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error) {
+func (c *controller) generatePolicyRules(ctx context.Context) ([]firewall.NetworkPolicyRule, error) {
 	var rules []firewall.NetworkPolicyRule
 
 	// Track which pods are affected by policies (by direction)
@@ -272,32 +267,52 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 		}
 
 		// Find pods that this policy applies to
-		selectedPods := c.selectPods(netpol.Namespace, netpol.Spec.PodSelector)
+		selectedPods := c.selectPods(ctx, netpol.Namespace, netpol.Spec.PodSelector)
 
-		// Process ingress rules
-		if len(netpol.Spec.Ingress) > 0 {
+		// Check if this policy affects ingress traffic
+		hasIngressPolicy := false
+		for _, policyType := range netpol.Spec.PolicyTypes {
+			if policyType == networkingv1.PolicyTypeIngress {
+				hasIngressPolicy = true
+				break
+			}
+		}
+
+		// Check if this policy affects egress traffic
+		hasEgressPolicy := false
+		for _, policyType := range netpol.Spec.PolicyTypes {
+			if policyType == networkingv1.PolicyTypeEgress {
+				hasEgressPolicy = true
+				break
+			}
+		}
+
+		// Process ingress rules (if policy type is Ingress)
+		if hasIngressPolicy {
 			// Mark these pods as affected by ingress policies
 			for _, pod := range selectedPods {
 				affectedPodsIngress[pod.IP] = true
 			}
 
+			// Generate allow rules for each ingress rule (if any)
 			for _, ingressRule := range netpol.Spec.Ingress {
-				rule := c.buildIngressRule(selectedPods, ingressRule, netpol.Namespace)
+				rule := c.buildIngressRule(ctx, selectedPods, ingressRule, netpol.Namespace)
 				if rule != nil {
 					rules = append(rules, *rule)
 				}
 			}
 		}
 
-		// Process egress rules
-		if len(netpol.Spec.Egress) > 0 {
+		// Process egress rules (if policy type is Egress)
+		if hasEgressPolicy {
 			// Mark these pods as affected by egress policies
 			for _, pod := range selectedPods {
 				affectedPodsEgress[pod.IP] = true
 			}
 
+			// Generate allow rules for each egress rule (if any)
 			for _, egressRule := range netpol.Spec.Egress {
-				rule := c.buildEgressRule(selectedPods, egressRule, netpol.Namespace)
+				rule := c.buildEgressRule(ctx, selectedPods, egressRule, netpol.Namespace)
 				if rule != nil {
 					rules = append(rules, *rule)
 				}
@@ -325,12 +340,13 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 	return rules, nil
 }
 
-func (c *controller) selectPods(namespace string, selector metav1.LabelSelector) []PodInfo {
+func (c *controller) selectPods(ctx context.Context, namespace string, selector metav1.LabelSelector) []PodInfo {
+	logger := klog.FromContext(ctx)
 	var selected []PodInfo
 
 	labelSelector, err := metav1.LabelSelectorAsSelector(&selector)
 	if err != nil {
-		klog.Warningf("invalid label selector: %v", err)
+		logger.Info("invalid label selector", "namespace", namespace, "error", err)
 		return selected
 	}
 
@@ -343,7 +359,7 @@ func (c *controller) selectPods(namespace string, selector metav1.LabelSelector)
 	return selected
 }
 
-func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networkingv1.NetworkPolicyIngressRule, namespace string) *firewall.NetworkPolicyRule {
+func (c *controller) buildIngressRule(ctx context.Context, selectedPods []PodInfo, ingressRule networkingv1.NetworkPolicyIngressRule, namespace string) *firewall.NetworkPolicyRule {
 	if len(selectedPods) == 0 {
 		return nil
 	}
@@ -375,7 +391,7 @@ func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networ
 	// Process from rules
 	if len(ingressRule.From) > 0 {
 		for _, from := range ingressRule.From {
-			c.processNetworkPolicyPeer(from, rule, namespace)
+			c.processNetworkPolicyPeer(ctx, from, rule, namespace)
 		}
 	} else {
 		// Empty from means allow from anywhere
@@ -388,7 +404,7 @@ func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networ
 	return rule
 }
 
-func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networkingv1.NetworkPolicyEgressRule, namespace string) *firewall.NetworkPolicyRule {
+func (c *controller) buildEgressRule(ctx context.Context, selectedPods []PodInfo, egressRule networkingv1.NetworkPolicyEgressRule, namespace string) *firewall.NetworkPolicyRule {
 	if len(selectedPods) == 0 {
 		return nil
 	}
@@ -420,7 +436,7 @@ func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networki
 	// Process to rules
 	if len(egressRule.To) > 0 {
 		for _, to := range egressRule.To {
-			c.processNetworkPolicyPeer(to, rule, namespace)
+			c.processNetworkPolicyPeer(ctx, to, rule, namespace)
 		}
 	} else {
 		// Empty to means allow to anywhere
@@ -433,7 +449,7 @@ func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networki
 	return rule
 }
 
-func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer, rule *firewall.NetworkPolicyRule, currentNamespace string) {
+func (c *controller) processNetworkPolicyPeer(ctx context.Context, peer networkingv1.NetworkPolicyPeer, rule *firewall.NetworkPolicyRule, currentNamespace string) {
 	// Handle podSelector
 	if peer.PodSelector != nil {
 		targetNamespace := currentNamespace
@@ -442,7 +458,7 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 			for nsName, nsLabels := range c.namespaces {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
 				if err == nil && nsSelector.Matches(labels.Set(nsLabels)) {
-					pods := c.selectPods(nsName, *peer.PodSelector)
+					pods := c.selectPods(ctx, nsName, *peer.PodSelector)
 					for _, pod := range pods {
 						rule.AllowedIPs = append(rule.AllowedIPs, pod.IP)
 					}
@@ -450,7 +466,7 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 			}
 		} else {
 			// Just pod selector in current namespace
-			pods := c.selectPods(targetNamespace, *peer.PodSelector)
+			pods := c.selectPods(ctx, targetNamespace, *peer.PodSelector)
 			for _, pod := range pods {
 				rule.AllowedIPs = append(rule.AllowedIPs, pod.IP)
 			}
@@ -477,4 +493,3 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 		}
 	}
 }
-

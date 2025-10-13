@@ -7,6 +7,7 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2/ktesting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tibordp/wigglenet/internal/wireguard"
@@ -18,7 +19,8 @@ func parsePrefix(cidr string) netip.Prefix {
 }
 
 func TestMakePeer2(t *testing.T) {
-	result := *makePeer(&v1.Node{
+	_, ctx := ktesting.NewTestContext(t)
+	result := *makePeer(ctx, &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -59,7 +61,8 @@ func TestMakePeer2(t *testing.T) {
 }
 
 func TestMakePeerNoAddresses(t *testing.T) {
-	result := makePeer(&v1.Node{
+	_, ctx := ktesting.NewTestContext(t)
+	result := makePeer(ctx, &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -76,7 +79,8 @@ func TestMakePeerNoAddresses(t *testing.T) {
 }
 
 func TestMakePeerInvalid(t *testing.T) {
-	result := makePeer(&v1.Node{
+	_, ctx := ktesting.NewTestContext(t)
+	result := makePeer(ctx, &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLwdHh8=",
@@ -90,7 +94,8 @@ func TestMakePeerInvalid(t *testing.T) {
 }
 
 func TestMakePeerInvalid1(t *testing.T) {
-	result := makePeer(&v1.Node{
+	_, ctx := ktesting.NewTestContext(t)
+	result := makePeer(ctx, &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -104,7 +109,8 @@ func TestMakePeerInvalid1(t *testing.T) {
 }
 
 func TestMakePeerInvalid2(t *testing.T) {
-	result := makePeer(&v1.Node{
+	_, ctx := ktesting.NewTestContext(t)
+	result := makePeer(ctx, &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
 				"wigglenet/public-key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
