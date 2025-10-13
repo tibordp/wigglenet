@@ -22,52 +22,45 @@ func compare(a ipBound, b ipBound) int {
 	return a.ip.Compare(b.ip)
 }
 
+// computeUpperBound sets all host bits to 1 and adds 1 (with carry propagation)
+// to get the first address after the prefix range.
+func computeUpperBound(bytes []byte, hostBits uint) bool {
+	carry := true
+	lastIdx := len(bytes) - 1
+
+	for i := lastIdx; i >= 0 && carry; i-- {
+		shift := hostBits - uint(lastIdx-i)*8
+		if shift > 0 && shift < 8 {
+			bytes[i] |= byte((1 << shift) - 1)
+		} else if shift >= 8 {
+			bytes[i] = 0xff
+		}
+
+		if carry {
+			bytes[i] += 1
+			carry = (bytes[i] == 0)
+		}
+	}
+
+	return carry // overflow
+}
+
 func getUpperBound(prefix netip.Prefix) ipBound {
 	// Get the last address in the prefix range and add 1
 	addr := prefix.Addr()
 	bits := prefix.Bits()
 
-	// Create a mask for the host bits
-	var carry bool = true
 	var overflow bool
 
 	if addr.Is4() {
 		a := addr.As4()
 		hostBits := uint(32 - bits)
-
-		for i := 3; i >= 0 && carry; i-- {
-			shift := hostBits - uint(3-i)*8
-			if shift > 0 && shift < 8 {
-				a[i] |= byte((1 << shift) - 1)
-			} else if shift >= 8 {
-				a[i] = 0xff
-			}
-
-			if carry {
-				a[i] += 1
-				carry = (a[i] == 0)
-			}
-		}
-		overflow = carry
+		overflow = computeUpperBound(a[:], hostBits)
 		addr = netip.AddrFrom4(a)
 	} else {
 		a := addr.As16()
 		hostBits := uint(128 - bits)
-
-		for i := 15; i >= 0 && carry; i-- {
-			shift := hostBits - uint(15-i)*8
-			if shift > 0 && shift < 8 {
-				a[i] |= byte((1 << shift) - 1)
-			} else if shift >= 8 {
-				a[i] = 0xff
-			}
-
-			if carry {
-				a[i] += 1
-				carry = (a[i] == 0)
-			}
-		}
-		overflow = carry
+		overflow = computeUpperBound(a[:], hostBits)
 		addr = netip.AddrFrom16(a)
 	}
 
