@@ -1,11 +1,12 @@
 package wireguard
 
 import (
-	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"reflect"
 	"sort"
@@ -34,7 +35,7 @@ func (wg *wireguardLink) Type() string {
 }
 
 type Manager interface {
-	ApplyConfiguration(config *WireguardConfig) error
+	ApplyConfiguration(ctx context.Context, config *WireguardConfig, logger klog.Logger) error
 	PublicKey() []byte
 }
 
@@ -47,11 +48,11 @@ type wireguardManager struct {
 }
 
 type WireguardConfig struct {
-	Addresses []net.IP
+	Addresses []netip.Addr
 	Peers     []Peer
 }
 
-func NewConfig(addresses []net.IP, peers []Peer) WireguardConfig {
+func NewConfig(addresses []netip.Addr, peers []Peer) WireguardConfig {
 	config := WireguardConfig{
 		Addresses: addresses,
 		Peers:     peers,
@@ -64,17 +65,17 @@ func (c *WireguardConfig) canonicalize() {
 	// Sort the peers so that the slice of peers will not change
 	// under deep comparison.
 	sort.Slice(c.Addresses, func(i, j int) bool {
-		return util.IPCompare(c.Addresses[i], c.Addresses[j]) < 0
+		return c.Addresses[i].Compare(c.Addresses[j]) < 0
 	})
 	sort.Slice(c.Peers, func(i, j int) bool {
-		return bytes.Compare(c.Peers[i].PublicKey[:], c.Peers[j].PublicKey[:]) < 0
+		return c.Peers[i].PublicKey.String() < c.Peers[j].PublicKey.String()
 	})
 }
 
 type Peer struct {
-	Endpoint  net.IP
-	NodeCIDRs []net.IPNet
-	PodCIDRs  []net.IPNet
+	Endpoint  netip.Addr
+	NodeCIDRs []netip.Prefix
+	PodCIDRs  []netip.Prefix
 	PublicKey wgtypes.Key
 }
 
@@ -82,11 +83,11 @@ func (c *wireguardManager) PublicKey() []byte {
 	return c.publicKey[:]
 }
 
-func getPeerCIDRs(peers []Peer) []net.IPNet {
-	routes := make([]net.IPNet, 0)
+func getPeerCIDRs(peers []Peer) []netip.Prefix {
+	routes := make([]netip.Prefix, 0)
 	for _, peer := range peers {
 		for _, cidr := range peer.PodCIDRs {
-			isIPv6 := cidr.IP.To4() == nil
+			isIPv6 := cidr.Addr().Is6()
 			if (isIPv6 && !config.NativeRoutingIPv6) || (!isIPv6 && !config.NativeRoutingIPv4) {
 				routes = append(routes, peer.PodCIDRs...)
 			}
@@ -95,26 +96,28 @@ func getPeerCIDRs(peers []Peer) []net.IPNet {
 	return util.SummarizeCIDRs(routes)
 }
 
-func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersCIDRs []net.IPNet) error {
+func (c *wireguardManager) reconcileRoutes(logger klog.Logger, addresses []netip.Addr, peersCIDRs []netip.Prefix) error {
 	// Find all directly attached routes to the wireguard interface
 	existingRoutes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, &netlink.Route{LinkIndex: c.link.Attrs().Index}, netlink.RT_FILTER_OIF)
 	if err != nil {
 		return err
 	}
 
-	redundant := make(map[string]netlink.Route)
+	redundant := make(map[netip.Prefix]netlink.Route)
 	for _, route := range existingRoutes {
-		redundant[route.Dst.String()] = route
+		if prefix, ok := util.PrefixFromIPNet(*route.Dst); ok {
+			redundant[prefix] = route
+		}
 	}
 
 	missing := make([]netlink.Route, 0)
 	for _, cidr := range peersCIDRs {
-		if _, ok := redundant[cidr.String()]; ok {
-			delete(redundant, cidr.String())
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
-			cidr := cidr
+			netlinkCIDR := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Route{
-				Dst:       &cidr,
+				Dst:       &netlinkCIDR,
 				LinkIndex: c.link.Attrs().Index,
 				Scope:     netlink.SCOPE_UNIVERSE,
 			})
@@ -127,12 +130,12 @@ func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersCIDRs []net.
 	// but the ptp plugin does it too, so I guess it's necessary.
 	for _, address := range addresses {
 		cidr := util.SingleHostCIDR(address)
-		if _, ok := redundant[cidr.String()]; ok {
-			delete(redundant, cidr.String())
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
-			cidr := cidr
+			netlinkCIDR := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Route{
-				Dst:       &cidr,
+				Dst:       &netlinkCIDR,
 				LinkIndex: c.link.Attrs().Index,
 				Scope:     netlink.SCOPE_HOST,
 			})
@@ -140,15 +143,15 @@ func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersCIDRs []net.
 	}
 
 	for _, v := range missing {
-		klog.Infof("adding route %v", v)
+		logger.Info("adding route", "route", v)
 		if err := netlink.RouteAdd(&v); err != nil {
 			return err
 		}
 	}
 
 	for _, v := range redundant {
-		klog.Infof("removing route %v", v)
-		if netlink.RouteDel(&v); err != nil {
+		logger.Info("removing route", "route", v)
+		if err := netlink.RouteDel(&v); err != nil {
 			return err
 		}
 	}
@@ -156,24 +159,26 @@ func (c *wireguardManager) reconcileRoutes(addresses []net.IP, peersCIDRs []net.
 	return nil
 }
 
-func (c *wireguardManager) reconcileAddresses(addresses []net.IP) error {
+func (c *wireguardManager) reconcileAddresses(logger klog.Logger, addresses []netip.Addr) error {
 	existingAddresses, err := netlink.AddrList(c.link, nl.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
 
-	redundant := make(map[string]netlink.Addr)
+	redundant := make(map[netip.Prefix]netlink.Addr)
 	for _, addr := range existingAddresses {
-		redundant[addr.IPNet.String()] = addr
+		if prefix, ok := util.PrefixFromIPNet(*addr.IPNet); ok {
+			redundant[prefix] = addr
+		}
 	}
 
 	missing := make([]netlink.Addr, 0)
 	for _, desiredAddr := range addresses {
-		desiredAddr := desiredAddr
-		ipNet := util.SingleHostCIDR(desiredAddr)
-		if _, ok := redundant[ipNet.String()]; ok {
-			delete(redundant, ipNet.String())
+		cidr := util.SingleHostCIDR(desiredAddr)
+		if _, ok := redundant[cidr]; ok {
+			delete(redundant, cidr)
 		} else {
+			ipNet := util.PrefixToIPNet(cidr)
 			missing = append(missing, netlink.Addr{
 				IPNet: &ipNet,
 			})
@@ -181,15 +186,15 @@ func (c *wireguardManager) reconcileAddresses(addresses []net.IP) error {
 	}
 
 	for _, v := range missing {
-		klog.Infof("adding address %v", v)
+		logger.Info("adding address", "address", v)
 		if err := netlink.AddrAdd(c.link, &v); err != nil {
 			return err
 		}
 	}
 
 	for _, v := range redundant {
-		klog.Infof("removing address %v", v)
-		if netlink.AddrDel(c.link, &v); err != nil {
+		logger.Info("removing address", "address", v)
+		if err := netlink.AddrDel(c.link, &v); err != nil {
 			return err
 		}
 	}
@@ -203,13 +208,15 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 	}
 
 	for i := range peer.PodCIDRs {
-		if existingPeer.AllowedIPs[i].String() != peer.PodCIDRs[i].String() {
+		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[i])
+		if !ok || existingPrefix != peer.PodCIDRs[i] {
 			return true
 		}
 	}
 
 	for i := range peer.NodeCIDRs {
-		if existingPeer.AllowedIPs[len(peer.PodCIDRs)+i].String() != peer.NodeCIDRs[i].String() {
+		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[len(peer.PodCIDRs)+i])
+		if !ok || existingPrefix != peer.NodeCIDRs[i] {
 			return true
 		}
 	}
@@ -218,17 +225,18 @@ func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
 		return true
 	}
 
-	if !existingPeer.Endpoint.IP.Equal(peer.Endpoint) || existingPeer.Endpoint.Port != config.WGPort {
+	endpointAddr, _ := netip.AddrFromSlice(existingPeer.Endpoint.IP)
+	if endpointAddr.Unmap() != peer.Endpoint || existingPeer.Endpoint.Port != config.WGPort {
 		return true
 	}
 
 	return false
 }
 
-func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
-	changeset := make(map[string]wgtypes.PeerConfig)
+func createPeerChangeset(logger klog.Logger, existingPeers []wgtypes.Peer, desiredPeers []Peer) []wgtypes.PeerConfig {
+	changeset := make(map[wgtypes.Key]wgtypes.PeerConfig)
 	for _, peer := range existingPeers {
-		changeset[peer.PublicKey.String()] = wgtypes.PeerConfig{
+		changeset[peer.PublicKey] = wgtypes.PeerConfig{
 			PublicKey:         peer.PublicKey,
 			Remove:            true,
 			AllowedIPs:        peer.AllowedIPs,
@@ -240,9 +248,9 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 	for _, peer := range desiredPeers {
 		var peerConfig wgtypes.PeerConfig
 		var ok bool
-		if peerConfig, ok = changeset[peer.PublicKey.String()]; ok {
+		if peerConfig, ok = changeset[peer.PublicKey]; ok {
 			if !peerNeedsUpdate(&peerConfig, &peer) {
-				delete(changeset, peer.PublicKey.String())
+				delete(changeset, peer.PublicKey)
 				continue
 			}
 			peerConfig.Remove = false
@@ -252,21 +260,21 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 		}
 
 		peerConfig.PublicKey = peer.PublicKey
-		peerConfig.Endpoint = &net.UDPAddr{IP: peer.Endpoint, Port: config.WGPort}
-		peerConfig.AllowedIPs = peer.PodCIDRs
-		peerConfig.AllowedIPs = append(peerConfig.AllowedIPs, peer.NodeCIDRs...)
+		peerConfig.Endpoint = &net.UDPAddr{IP: peer.Endpoint.AsSlice(), Port: config.WGPort}
+		peerConfig.AllowedIPs = util.PrefixesToIPNets(peer.PodCIDRs)
+		peerConfig.AllowedIPs = append(peerConfig.AllowedIPs, util.PrefixesToIPNets(peer.NodeCIDRs)...)
 
-		changeset[peer.PublicKey.String()] = peerConfig
+		changeset[peer.PublicKey] = peerConfig
 	}
 
 	peerConfigs := make([]wgtypes.PeerConfig, 0)
 	for _, v := range changeset {
 		if v.Remove {
-			klog.Infof("removing peer %v", v.PublicKey.String())
+			logger.Info("removing peer", "publicKey", v.PublicKey.String())
 		} else if v.UpdateOnly {
-			klog.Infof("updating peer %v", v.PublicKey.String())
+			logger.Info("updating peer", "publicKey", v.PublicKey.String())
 		} else {
-			klog.Infof("adding peer %v", v.PublicKey.String())
+			logger.Info("adding peer", "publicKey", v.PublicKey.String())
 		}
 		peerConfigs = append(peerConfigs, v)
 	}
@@ -274,13 +282,13 @@ func createPeerChangeset(existingPeers []wgtypes.Peer, desiredPeers []Peer) []wg
 	return peerConfigs
 }
 
-func (c *wireguardManager) reconcileWireguardPeers(peers []Peer) error {
+func (c *wireguardManager) reconcileWireguardPeers(logger klog.Logger, peers []Peer) error {
 	device, err := c.wgctrl.Device(c.link.Attrs().Name)
 	if err != nil {
 		return err
 	}
 
-	peerConfigs := createPeerChangeset(device.Peers, peers)
+	peerConfigs := createPeerChangeset(logger, device.Peers, peers)
 
 	if len(peerConfigs) > 0 {
 		if err := c.wgctrl.ConfigureDevice(device.Name, wgtypes.Config{
@@ -295,22 +303,22 @@ func (c *wireguardManager) reconcileWireguardPeers(peers []Peer) error {
 	return nil
 }
 
-func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
+func (c *wireguardManager) ApplyConfiguration(ctx context.Context, config *WireguardConfig, logger klog.Logger) error {
 	if reflect.DeepEqual(config, c.lastAppliedConfig) {
 		return nil
 	}
 
-	klog.Infof("applying new Wireguard configuration")
-	if err := c.reconcileWireguardPeers(config.Peers); err != nil {
+	logger.Info("applying new Wireguard configuration")
+	if err := c.reconcileWireguardPeers(logger, config.Peers); err != nil {
 		return err
 	}
 
-	if err := c.reconcileAddresses(config.Addresses); err != nil {
+	if err := c.reconcileAddresses(logger, config.Addresses); err != nil {
 		return err
 	}
 
 	peersCIDRs := getPeerCIDRs(config.Peers)
-	if err := c.reconcileRoutes(config.Addresses, peersCIDRs); err != nil {
+	if err := c.reconcileRoutes(logger, config.Addresses, peersCIDRs); err != nil {
 		return err
 	}
 
@@ -318,10 +326,11 @@ func (c *wireguardManager) ApplyConfiguration(config *WireguardConfig) error {
 	return nil
 }
 
-func ensureWgLink() (netlink.Link, error) {
+func ensureWgLink(ctx context.Context) (netlink.Link, error) {
+	logger := klog.FromContext(ctx)
 	link, err := netlink.LinkByName(config.WGLinkName)
 	if _, ok := err.(netlink.LinkNotFoundError); ok {
-		klog.Infof("device %q does not exist, creating it", config.WGLinkName)
+		logger.Info("device does not exist, creating it", "device", config.WGLinkName)
 		newLink := wireguardLink{LinkAttrs: netlink.LinkAttrs{Name: config.WGLinkName}}
 		if err := netlink.LinkAdd(&newLink); err != nil {
 			return nil, err
@@ -340,12 +349,13 @@ func ensureWgLink() (netlink.Link, error) {
 	return link, nil
 }
 
-func ensurePrivateKey() (*wgtypes.Key, error) {
+func ensurePrivateKey(ctx context.Context) (*wgtypes.Key, error) {
+	logger := klog.FromContext(ctx)
 	privateKey := wgtypes.Key{}
 
 	file, err := os.Open(config.PrivateKeyFilename)
 	if os.IsNotExist(err) {
-		klog.Infof("wireguard private key not found, generating a new one")
+		logger.Info("wireguard private key not found, generating a new one")
 		privateKey, err = wgtypes.GeneratePrivateKey()
 		if err != nil {
 			return nil, err
@@ -386,8 +396,8 @@ func ensurePrivateKey() (*wgtypes.Key, error) {
 	return &privateKey, nil
 }
 
-func NewManager() (Manager, error) {
-	privateKey, err := ensurePrivateKey()
+func NewManager(ctx context.Context) (Manager, error) {
+	privateKey, err := ensurePrivateKey(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +407,7 @@ func NewManager() (Manager, error) {
 		return nil, err
 	}
 
-	link, err := ensureWgLink()
+	link, err := ensureWgLink(ctx)
 	if err != nil {
 		return nil, err
 	}

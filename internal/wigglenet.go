@@ -2,7 +2,7 @@ package internal
 
 import (
 	"context"
-	"net"
+	"net/netip"
 
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
@@ -32,7 +32,7 @@ func New(ctx context.Context) (Wigglenet, error) {
 	}
 
 	// Create separate channels for firewall manager
-	podCIDRUpdates := make(chan []net.IPNet)
+	podCIDRUpdates := make(chan []netip.Prefix)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule)
 	firewallManager := firewall.New(podCIDRUpdates, policyUpdates)
 
@@ -45,7 +45,7 @@ func New(ctx context.Context) (Wigglenet, error) {
 		cniwriter := cni.NewCNIConfigWriter()
 		ctrl = controller.NewController(clientset, nil, cniwriter, podCIDRUpdates)
 	} else {
-		wireguard, err := wireguard.NewManager()
+		wireguard, err := wireguard.NewManager(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -67,9 +67,9 @@ func New(ctx context.Context) (Wigglenet, error) {
 	}
 
 	return &wigglenet{
-		controller:        ctrl,
-		firewallManager:   firewallManager,
-		netpolController:  netpolController,
+		controller:       ctrl,
+		firewallManager:  firewallManager,
+		netpolController: netpolController,
 	}, nil
 }
 

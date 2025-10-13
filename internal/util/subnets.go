@@ -1,15 +1,14 @@
 package util
 
 import (
-	"bytes"
-	"net"
+	"net/netip"
 	"sort"
 )
 
 // Representation of an IP address that allows for half-open intervals
 // (with overflow bit that represents the top of the address space)
 type ipBound struct {
-	ip       net.IP
+	ip       netip.Addr
 	overflow bool
 }
 
@@ -17,43 +16,64 @@ func compare(a ipBound, b ipBound) int {
 	if a.overflow != b.overflow {
 		if a.overflow {
 			return 1
-		} else {
-			return -1
 		}
+		return -1
 	}
-	return bytes.Compare(a.ip, b.ip)
+	return a.ip.Compare(b.ip)
 }
 
-func getUpperBound(ip net.IP, mask net.IPMask) ipBound {
-	n := len(ip)
-	out := make(net.IP, n)
+// computeUpperBound sets all host bits to 1 and adds 1 (with carry propagation)
+// to get the first address after the prefix range.
+func computeUpperBound(bytes []byte, hostBits uint) bool {
+	carry := true
+	lastIdx := len(bytes) - 1
 
-	var carry bool = true
-	for i := n - 1; i >= 0; i-- {
-		out[i] = ip[i] | ^mask[i]
+	for i := lastIdx; i >= 0 && carry; i-- {
+		shift := hostBits - uint(lastIdx-i)*8
+		if shift > 0 && shift < 8 {
+			bytes[i] |= byte((1 << shift) - 1)
+		} else if shift >= 8 {
+			bytes[i] = 0xff
+		}
+
 		if carry {
-			out[i] += 1
-			// Carry if there is overflow
-			carry = (out[i] == 0)
+			bytes[i] += 1
+			carry = (bytes[i] == 0)
 		}
 	}
 
+	return carry // overflow
+}
+
+func getUpperBound(prefix netip.Prefix) ipBound {
+	// Get the last address in the prefix range and add 1
+	addr := prefix.Addr()
+	bits := prefix.Bits()
+
+	var overflow bool
+
+	if addr.Is4() {
+		a := addr.As4()
+		hostBits := uint(32 - bits)
+		overflow = computeUpperBound(a[:], hostBits)
+		addr = netip.AddrFrom4(a)
+	} else {
+		a := addr.As16()
+		hostBits := uint(128 - bits)
+		overflow = computeUpperBound(a[:], hostBits)
+		addr = netip.AddrFrom16(a)
+	}
+
 	return ipBound{
-		ip:       out,
-		overflow: carry,
+		ip:       addr,
+		overflow: overflow,
 	}
 }
 
-func getLowerBound(ip net.IP, mask net.IPMask) ipBound {
-	n := len(ip)
-	out := make(net.IP, n)
-
-	for i := n - 1; i >= 0; i-- {
-		out[i] = ip[i] & mask[i]
-	}
-
+func getLowerBound(prefix netip.Prefix) ipBound {
+	// Get the network address (first address in the prefix)
 	return ipBound{
-		ip:       out,
+		ip:       prefix.Masked().Addr(),
 		overflow: false,
 	}
 }
@@ -64,18 +84,20 @@ type marker struct {
 }
 
 // splitCIDRs splits a range of IP addresses into aligned cidrs
-func splitCIDRs(start, stop ipBound) []net.IPNet {
-	results := make([]net.IPNet, 0)
+func splitCIDRs(start, stop ipBound) []netip.Prefix {
+	results := make([]netip.Prefix, 0)
+	maxBits := 32
+	if start.ip.Is6() {
+		maxBits = 128
+	}
+
 	for {
-		for j := 0; j < len(start.ip)*8; j++ {
-			mask := net.CIDRMask(j, len(start.ip)*8)
-			lower := getLowerBound(start.ip, mask)
-			upper := getUpperBound(start.ip, mask)
+		for j := 0; j <= maxBits; j++ {
+			prefix := netip.PrefixFrom(start.ip, j)
+			lower := getLowerBound(prefix)
+			upper := getUpperBound(prefix)
 			if compare(lower, start) == 0 && compare(upper, stop) <= 0 {
-				results = append(results, net.IPNet{
-					IP:   lower.ip,
-					Mask: mask,
-				})
+				results = append(results, prefix.Masked())
 				start = upper
 				break
 			}
@@ -87,20 +109,18 @@ func splitCIDRs(start, stop ipBound) []net.IPNet {
 	return results
 }
 
-func summarizeCIDRs(cidrs []net.IPNet, ipv6 bool) []net.IPNet {
+func summarizeCIDRs(cidrs []netip.Prefix, ipv6 bool) []netip.Prefix {
 	markers := make([]marker, 0)
 	// convert IP networks into interval endpoints
-	for _, network := range cidrs {
-		// Do not use .To4() check here. We specifically want to treat
-		// ::ffff:a.b.c.d/x as an IPv6 cidr.
-		if (len(network.IP) == net.IPv6len) == ipv6 {
+	for _, prefix := range cidrs {
+		if prefix.Addr().Is6() == ipv6 {
 			markers = append(markers,
 				marker{
-					bound: getUpperBound(network.IP, network.Mask),
+					bound: getUpperBound(prefix),
 					upper: true,
 				},
 				marker{
-					bound: getLowerBound(network.IP, network.Mask),
+					bound: getLowerBound(prefix),
 					upper: false,
 				},
 			)
@@ -117,8 +137,8 @@ func summarizeCIDRs(cidrs []net.IPNet, ipv6 bool) []net.IPNet {
 	})
 
 	// calculate the union
-	results := make([]net.IPNet, 0)
-	var depth int = 0
+	results := make([]netip.Prefix, 0)
+	var depth int
 	var start ipBound
 	for i := 0; i < len(markers); i++ {
 		if depth == 0 {
@@ -140,8 +160,8 @@ func summarizeCIDRs(cidrs []net.IPNet, ipv6 bool) []net.IPNet {
 
 // SummarizeCIDRs computes the union of CIDRs by collapsing adjecent ones into
 // a CIDR with a shorter prefix and removes overlapping ones.
-func SummarizeCIDRs(cidrs []net.IPNet) []net.IPNet {
-	results := make([]net.IPNet, 0)
+func SummarizeCIDRs(cidrs []netip.Prefix) []netip.Prefix {
+	results := make([]netip.Prefix, 0)
 	results = append(results, summarizeCIDRs(cidrs, true)...)
 	results = append(results, summarizeCIDRs(cidrs, false)...)
 	return results

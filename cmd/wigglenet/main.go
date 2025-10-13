@@ -16,14 +16,18 @@ func main() {
 
 	flag.Parse()
 
-	context, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	wigglenet, err := wigglenet.New(context)
+	// Create logger and add to context
+	logger := klog.NewKlogr()
+	ctx = klog.NewContext(ctx, logger)
+
+	wigglenet, err := wigglenet.New(ctx)
 	if err != nil {
 		klog.Fatal(err)
 	}
 
-	wigglenet.Run(context)
-	klog.Info("gracefully terminated")
+	wigglenet.Run(ctx)
+	logger.Info("gracefully terminated")
 }

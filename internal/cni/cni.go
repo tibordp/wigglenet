@@ -1,9 +1,10 @@
 package cni
 
 import (
+	"context"
 	"encoding/json"
 	"io"
-	"net"
+	"net/netip"
 	"os"
 	"reflect"
 
@@ -14,7 +15,7 @@ import (
 )
 
 type CNIConfig struct {
-	PodCIDRs []net.IPNet
+	PodCIDRs []netip.Prefix
 }
 
 // NetConfList is a CNI chaining configuration
@@ -51,14 +52,14 @@ type IPAMConfig struct {
 type RangeSet []Range
 
 type Range struct {
-	RangeStart net.IP         `json:"rangeStart,omitempty"` // The first ip, inclusive
-	RangeEnd   net.IP         `json:"rangeEnd,omitempty"`   // The last ip, inclusive
+	RangeStart netip.Addr     `json:"rangeStart,omitempty"` // The first ip, inclusive
+	RangeEnd   netip.Addr     `json:"rangeEnd,omitempty"`   // The last ip, inclusive
 	Subnet     cniTypes.IPNet `json:"subnet"`
-	Gateway    net.IP         `json:"gateway,omitempty"`
+	Gateway    netip.Addr     `json:"gateway,omitempty"`
 }
 
 type CNIConfigWriter interface {
-	WriteCNIConfig(inputs CNIConfig) error
+	WriteCNIConfig(ctx context.Context, inputs CNIConfig, logger klog.Logger) error
 }
 
 type cniConfigWriter struct {
@@ -70,12 +71,12 @@ func NewCNIConfigWriter() CNIConfigWriter {
 }
 
 // WriteCNIConfig writes the
-func (c *cniConfigWriter) WriteCNIConfig(inputs CNIConfig) error {
+func (c *cniConfigWriter) WriteCNIConfig(ctx context.Context, inputs CNIConfig, logger klog.Logger) error {
 	if reflect.DeepEqual(inputs, c.lastConfig) {
 		return nil
 	}
 
-	klog.Infof("applying new CNI configuration: %v", inputs)
+	logger.Info("applying new CNI configuration", "config", inputs)
 
 	f, err := os.Create(config.CniConfigPath + ".temp")
 	if err != nil {
@@ -106,16 +107,18 @@ func (c *cniConfigWriter) WriteCNIConfig(inputs CNIConfig) error {
 func writeCNIConfig(w io.Writer, data CNIConfig) error {
 	routes := make([]*cniTypes.Route, 0)
 	for _, route := range util.GetDefaultRoutes(data.PodCIDRs) {
+		ipnet := util.PrefixToIPNet(route)
 		routes = append(routes, &cniTypes.Route{
-			Dst: route,
+			Dst: ipnet,
 		})
 	}
 
 	ranges := make([]RangeSet, 0)
 	for _, cidr := range data.PodCIDRs {
+		ipnet := util.PrefixToIPNet(cidr)
 		ranges = append(ranges, RangeSet{
 			Range{
-				Subnet: cniTypes.IPNet(cidr),
+				Subnet: cniTypes.IPNet(ipnet),
 			},
 		})
 	}

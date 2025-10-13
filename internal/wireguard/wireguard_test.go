@@ -2,10 +2,12 @@ package wireguard
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"k8s.io/klog/v2/ktesting"
 )
 
 func parseKey(s string) wgtypes.Key {
@@ -16,6 +18,11 @@ func parseKey(s string) wgtypes.Key {
 func parseCIDR(cidr string) net.IPNet {
 	_, c, _ := net.ParseCIDR(cidr)
 	return *c
+}
+
+func parsePrefix(cidr string) netip.Prefix {
+	p, _ := netip.ParsePrefix(cidr)
+	return p
 }
 
 func TestCreateChangesetNoChange(t *testing.T) {
@@ -32,17 +39,19 @@ func TestCreateChangesetNoChange(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Len(t, actual, 0)
 }
@@ -61,22 +70,22 @@ func TestCreateChangesetAdd(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},
 
 		{
-			Endpoint: net.ParseIP("192.168.1.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.1.0/24"),
-				parseCIDR("2001:db8:0:2::/64"),
+			Endpoint: netip.MustParseAddr("192.168.1.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.1.0/24"),
+				parsePrefix("2001:db8:0:2::/64"),
 			},
-			NodeCIDRs: []net.IPNet{},
+			NodeCIDRs: []netip.Prefix{},
 			PublicKey: parseKey("oFFVKLsHSZ5BFTLdKxubHnvprQ5jdssnaW6nzaQMrGY="),
 		},
 	}
@@ -86,7 +95,7 @@ func TestCreateChangesetAdd(t *testing.T) {
 			PublicKey:         parseKey("oFFVKLsHSZ5BFTLdKxubHnvprQ5jdssnaW6nzaQMrGY="),
 			Remove:            false,
 			UpdateOnly:        false,
-			Endpoint:          &net.UDPAddr{IP: net.ParseIP("192.168.1.1"), Port: 24601},
+			Endpoint:          &net.UDPAddr{IP: net.IP{192, 168, 1, 1}, Port: 24601},
 			ReplaceAllowedIPs: false,
 			AllowedIPs: []net.IPNet{
 				parseCIDR("192.168.1.0/24"),
@@ -97,7 +106,9 @@ func TestCreateChangesetAdd(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }
@@ -132,7 +143,9 @@ func TestCreateChangesetRemove(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }
@@ -151,13 +164,13 @@ func TestCreateChangesetUpdate(t *testing.T) {
 
 	desiredPeers := []Peer{
 		{
-			Endpoint: net.ParseIP("192.168.0.1"),
-			PodCIDRs: []net.IPNet{
-				parseCIDR("192.168.0.0/24"),
-				parseCIDR("2001:db8:0:1::/64"),
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
 			},
-			NodeCIDRs: []net.IPNet{
-				parseCIDR("2001:db8:1::1/128"),
+			NodeCIDRs: []netip.Prefix{
+				parsePrefix("2001:db8:1::1/128"),
 			},
 			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 		},
@@ -168,7 +181,7 @@ func TestCreateChangesetUpdate(t *testing.T) {
 			PublicKey:         parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
 			Remove:            false,
 			UpdateOnly:        true,
-			Endpoint:          &net.UDPAddr{IP: net.ParseIP("192.168.0.1"), Port: 24601},
+			Endpoint:          &net.UDPAddr{IP: net.IP{192, 168, 0, 1}, Port: 24601},
 			ReplaceAllowedIPs: true,
 			AllowedIPs: []net.IPNet{
 				parseCIDR("192.168.0.0/24"),
@@ -180,7 +193,9 @@ func TestCreateChangesetUpdate(t *testing.T) {
 		},
 	}
 
-	actual := createPeerChangeset(existingPeers, desiredPeers)
+	logger, ctx := ktesting.NewTestContext(t)
+	_ = ctx
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
 
 	assert.Equal(t, expected, actual)
 }

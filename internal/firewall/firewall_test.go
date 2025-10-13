@@ -3,19 +3,21 @@ package firewall
 //go:generate mockery --all --exported
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/firewall/mocks"
+	"k8s.io/klog/v2/ktesting"
 	"k8s.io/kubernetes/pkg/util/iptables"
 )
 
 func TestSyncFilterWithGlobalFiltering(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	// Save original values
 	origFilterIPv6 := config.FilterIPv6
 	defer func() { config.FilterIPv6 = origFilterIPv6 }()
-	
+
 	// Enable global IPv6 filtering for this test
 	config.FilterIPv6 = true
 
@@ -43,18 +45,19 @@ func TestSyncFilterWithGlobalFiltering(t *testing.T) {
 COMMIT
 `), iptables.NoFlushTables, iptables.NoRestoreCounters).Return(nil)
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
+	cidr := netip.MustParsePrefix("2001:db8::/64")
 	policyRules := []NetworkPolicyRule{} // Empty policy rules for basic test
-	manager.syncFilterRules(mockIptables, []net.IPNet{*cidr}, policyRules, true, false)
+	manager.syncFilterRules(ctx, mockIptables, []netip.Prefix{cidr}, policyRules, true, false)
 
 	mockIptables.AssertExpectations(t)
 }
 
 func TestSyncFilterNetworkPolicyOnly(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	// Save original values
 	origFilterIPv6 := config.FilterIPv6
 	defer func() { config.FilterIPv6 = origFilterIPv6 }()
-	
+
 	// Disable global IPv6 filtering for this test
 	config.FilterIPv6 = false
 
@@ -87,20 +90,21 @@ COMMIT
 	// Create a simple NetworkPolicy rule with IPv6 addresses
 	policyRules := []NetworkPolicyRule{
 		{
-			Direction:   "ingress",
-			PodIPs:      []net.IP{net.ParseIP("2001:db8::1")},
-			AllowedIPs:  []net.IP{net.ParseIP("2001:db8::2")},
-			Action:      "allow",
+			Direction:  "ingress",
+			PodIPs:     []netip.Addr{netip.MustParseAddr("2001:db8::1")},
+			AllowedIPs: []netip.Addr{netip.MustParseAddr("2001:db8::2")},
+			Action:     "allow",
 		},
 	}
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
-	manager.syncFilterRules(mockIptables, []net.IPNet{*cidr}, policyRules, true, true)
+	cidr := netip.MustParsePrefix("2001:db8::/64")
+	manager.syncFilterRules(ctx, mockIptables, []netip.Prefix{cidr}, policyRules, true, true)
 
 	mockIptables.AssertExpectations(t)
 }
 
 func TestSyncNat(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
 	mockIptables := new(mocks.IpTables)
 	manager := new(firewallManager)
 
@@ -118,8 +122,8 @@ func TestSyncNat(t *testing.T) {
 COMMIT
 `), iptables.NoFlushTables, iptables.NoRestoreCounters).Return(nil)
 
-	_, cidr, _ := net.ParseCIDR("2001:db8::/64")
-	manager.syncMasqueradeRules(mockIptables, []net.IPNet{*cidr})
+	cidr := netip.MustParsePrefix("2001:db8::/64")
+	manager.syncMasqueradeRules(ctx, mockIptables, []netip.Prefix{cidr})
 
 	mockIptables.AssertExpectations(t)
 }

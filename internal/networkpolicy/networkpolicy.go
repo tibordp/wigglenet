@@ -3,7 +3,7 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/firewall"
@@ -26,7 +26,7 @@ type Controller interface {
 }
 
 type PodInfo struct {
-	IP        net.IP
+	IP        netip.Addr
 	Namespace string
 	Labels    map[string]string
 }
@@ -47,11 +47,11 @@ type controller struct {
 	nsIndexer  cache.Indexer
 	nsInformer cache.Controller
 
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[string]
 
 	// Current state
-	pods       map[string]PodInfo                   // podIP -> PodInfo
-	namespaces map[string]map[string]string        // namespace -> labels
+	pods       map[netip.Addr]PodInfo       // podIP -> PodInfo
+	namespaces map[string]map[string]string // namespace -> labels
 }
 
 func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall.NetworkPolicyRule) Controller {
@@ -79,7 +79,7 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 		fields.Everything(),
 	)
 
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 
 	// Create indexers and informers
 	netpolIndexer, netpolInformer := cache.NewIndexerInformer(
@@ -119,25 +119,26 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 	)
 
 	return &controller{
-		clientset:     clientset,
-		policyUpdates: policyUpdates,
-		netpolIndexer: netpolIndexer,
+		clientset:      clientset,
+		policyUpdates:  policyUpdates,
+		netpolIndexer:  netpolIndexer,
 		netpolInformer: netpolInformer,
-		podIndexer:    podIndexer,
-		podInformer:   podInformer,
-		nsIndexer:     nsIndexer,
-		nsInformer:    nsInformer,
-		queue:         queue,
-		pods:          make(map[string]PodInfo),
-		namespaces:    make(map[string]map[string]string),
+		podIndexer:     podIndexer,
+		podInformer:    podInformer,
+		nsIndexer:      nsIndexer,
+		nsInformer:     nsInformer,
+		queue:          queue,
+		pods:           make(map[netip.Addr]PodInfo),
+		namespaces:     make(map[string]map[string]string),
 	}
 }
 
 func (c *controller) Run(ctx context.Context) {
 	defer runtime.HandleCrash()
 	defer c.queue.ShutDown()
+	logger := klog.FromContext(ctx)
 
-	klog.Info("starting NetworkPolicy controller")
+	logger.Info("starting NetworkPolicy controller")
 
 	// Start informers
 	go c.netpolInformer.Run(ctx.Done())
@@ -154,44 +155,38 @@ func (c *controller) Run(ctx context.Context) {
 	}
 
 	// Initial sync
-	c.syncState()
+	c.syncState(ctx)
 
-	go wait.Until(c.runWorker, time.Second, ctx.Done())
+	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 	<-ctx.Done()
 
-	klog.Info("finished NetworkPolicy controller")
+	logger.Info("finished NetworkPolicy controller")
 }
 
-func (c *controller) runWorker() {
-	for c.processNextItem() {
+func (c *controller) runWorker(ctx context.Context) {
+	for c.processNextItem(ctx) {
 	}
 }
 
-func (c *controller) processNextItem() bool {
+func (c *controller) processNextItem(ctx context.Context) bool {
 	key, quit := c.queue.Get()
 	if quit {
 		return false
 	}
 	defer c.queue.Done(key)
 
-	err := c.syncState()
-	if err != nil {
-		if c.queue.NumRequeues(key) < 5 {
-			klog.Infof("error syncing NetworkPolicy state: %v", err)
-			c.queue.AddRateLimited(key)
-			return true
-		}
+	err := c.syncState(ctx)
+	if err == nil {
 		c.queue.Forget(key)
-		runtime.HandleError(err)
-		klog.Warningf("dropping NetworkPolicy key %q out of the queue: %v", key, err)
-	} else {
-		c.queue.Forget(key)
+		return true
 	}
 
+	runtime.HandleErrorWithContext(ctx, err, "Error syncing NetworkPolicy; requeuing for later retry", "key", key)
+	c.queue.AddRateLimited(key)
 	return true
 }
 
-func (c *controller) syncState() error {
+func (c *controller) syncState(ctx context.Context) error {
 	// Update pods map
 	c.updatePodsMap()
 
@@ -199,7 +194,7 @@ func (c *controller) syncState() error {
 	c.updateNamespacesMap()
 
 	// Generate NetworkPolicy rules
-	policyRules, err := c.generatePolicyRules()
+	policyRules, err := c.generatePolicyRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -211,7 +206,7 @@ func (c *controller) syncState() error {
 }
 
 func (c *controller) updatePodsMap() {
-	newPods := make(map[string]PodInfo)
+	newPods := make(map[netip.Addr]PodInfo)
 
 	for _, obj := range c.podIndexer.List() {
 		if pod, ok := obj.(*v1.Pod); ok {
@@ -219,23 +214,21 @@ func (c *controller) updatePodsMap() {
 				// Handle dual-stack: read all pod IPs from status.podIPs
 				for _, podIPStatus := range pod.Status.PodIPs {
 					if podIPStatus.IP != "" {
-						ip := net.ParseIP(podIPStatus.IP)
-						if ip != nil {
-							newPods[podIPStatus.IP] = PodInfo{
-								IP:        ip,
+						if addr, err := netip.ParseAddr(podIPStatus.IP); err == nil {
+							newPods[addr] = PodInfo{
+								IP:        addr,
 								Namespace: pod.Namespace,
 								Labels:    pod.Labels,
 							}
 						}
 					}
 				}
-				
+
 				// Fallback to status.podIP for compatibility
 				if pod.Status.PodIP != "" {
-					ip := net.ParseIP(pod.Status.PodIP)
-					if ip != nil {
-						newPods[pod.Status.PodIP] = PodInfo{
-							IP:        ip,
+					if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil {
+						newPods[addr] = PodInfo{
+							IP:        addr,
 							Namespace: pod.Namespace,
 							Labels:    pod.Labels,
 						}
@@ -260,12 +253,12 @@ func (c *controller) updateNamespacesMap() {
 	c.namespaces = newNamespaces
 }
 
-func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error) {
+func (c *controller) generatePolicyRules(ctx context.Context) ([]firewall.NetworkPolicyRule, error) {
 	var rules []firewall.NetworkPolicyRule
-	
+
 	// Track which pods are affected by policies (by direction)
-	affectedPodsIngress := make(map[string]bool) // podIP -> true
-	affectedPodsEgress := make(map[string]bool)  // podIP -> true
+	affectedPodsIngress := make(map[netip.Addr]bool) // podIP -> true
+	affectedPodsEgress := make(map[netip.Addr]bool)  // podIP -> true
 
 	for _, obj := range c.netpolIndexer.List() {
 		netpol, ok := obj.(*networkingv1.NetworkPolicy)
@@ -274,32 +267,52 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 		}
 
 		// Find pods that this policy applies to
-		selectedPods := c.selectPods(netpol.Namespace, netpol.Spec.PodSelector)
+		selectedPods := c.selectPods(ctx, netpol.Namespace, netpol.Spec.PodSelector)
 
-		// Process ingress rules
-		if len(netpol.Spec.Ingress) > 0 {
+		// Check if this policy affects ingress traffic
+		hasIngressPolicy := false
+		for _, policyType := range netpol.Spec.PolicyTypes {
+			if policyType == networkingv1.PolicyTypeIngress {
+				hasIngressPolicy = true
+				break
+			}
+		}
+
+		// Check if this policy affects egress traffic
+		hasEgressPolicy := false
+		for _, policyType := range netpol.Spec.PolicyTypes {
+			if policyType == networkingv1.PolicyTypeEgress {
+				hasEgressPolicy = true
+				break
+			}
+		}
+
+		// Process ingress rules (if policy type is Ingress)
+		if hasIngressPolicy {
 			// Mark these pods as affected by ingress policies
 			for _, pod := range selectedPods {
-				affectedPodsIngress[pod.IP.String()] = true
+				affectedPodsIngress[pod.IP] = true
 			}
-			
+
+			// Generate allow rules for each ingress rule (if any)
 			for _, ingressRule := range netpol.Spec.Ingress {
-				rule := c.buildIngressRule(selectedPods, ingressRule, netpol.Namespace)
+				rule := c.buildIngressRule(ctx, selectedPods, ingressRule, netpol.Namespace)
 				if rule != nil {
 					rules = append(rules, *rule)
 				}
 			}
 		}
 
-		// Process egress rules
-		if len(netpol.Spec.Egress) > 0 {
+		// Process egress rules (if policy type is Egress)
+		if hasEgressPolicy {
 			// Mark these pods as affected by egress policies
 			for _, pod := range selectedPods {
-				affectedPodsEgress[pod.IP.String()] = true
+				affectedPodsEgress[pod.IP] = true
 			}
-			
+
+			// Generate allow rules for each egress rule (if any)
 			for _, egressRule := range netpol.Spec.Egress {
-				rule := c.buildEgressRule(selectedPods, egressRule, netpol.Namespace)
+				rule := c.buildEgressRule(ctx, selectedPods, egressRule, netpol.Namespace)
 				if rule != nil {
 					rules = append(rules, *rule)
 				}
@@ -308,37 +321,32 @@ func (c *controller) generatePolicyRules() ([]firewall.NetworkPolicyRule, error)
 	}
 
 	// Generate default deny rules for affected pods
-	for podIPStr := range affectedPodsIngress {
-		podIP := net.ParseIP(podIPStr)
-		if podIP != nil {
-			rules = append(rules, firewall.NetworkPolicyRule{
-				Direction: "ingress",
-				PodIPs:    []net.IP{podIP},
-				Action:    "deny",
-			})
-		}
+	for podIP := range affectedPodsIngress {
+		rules = append(rules, firewall.NetworkPolicyRule{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{podIP},
+			Action:    "deny",
+		})
 	}
 
-	for podIPStr := range affectedPodsEgress {
-		podIP := net.ParseIP(podIPStr)
-		if podIP != nil {
-			rules = append(rules, firewall.NetworkPolicyRule{
-				Direction: "egress", 
-				PodIPs:    []net.IP{podIP},
-				Action:    "deny",
-			})
-		}
+	for podIP := range affectedPodsEgress {
+		rules = append(rules, firewall.NetworkPolicyRule{
+			Direction: "egress",
+			PodIPs:    []netip.Addr{podIP},
+			Action:    "deny",
+		})
 	}
 
 	return rules, nil
 }
 
-func (c *controller) selectPods(namespace string, selector metav1.LabelSelector) []PodInfo {
+func (c *controller) selectPods(ctx context.Context, namespace string, selector metav1.LabelSelector) []PodInfo {
+	logger := klog.FromContext(ctx)
 	var selected []PodInfo
 
 	labelSelector, err := metav1.LabelSelectorAsSelector(&selector)
 	if err != nil {
-		klog.Warningf("invalid label selector: %v", err)
+		logger.Info("invalid label selector", "namespace", namespace, "error", err)
 		return selected
 	}
 
@@ -351,14 +359,14 @@ func (c *controller) selectPods(namespace string, selector metav1.LabelSelector)
 	return selected
 }
 
-func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networkingv1.NetworkPolicyIngressRule, namespace string) *firewall.NetworkPolicyRule {
+func (c *controller) buildIngressRule(ctx context.Context, selectedPods []PodInfo, ingressRule networkingv1.NetworkPolicyIngressRule, namespace string) *firewall.NetworkPolicyRule {
 	if len(selectedPods) == 0 {
 		return nil
 	}
 
 	rule := &firewall.NetworkPolicyRule{
 		Direction: "ingress",
-		PodIPs:    make([]net.IP, 0, len(selectedPods)),
+		PodIPs:    make([]netip.Addr, 0, len(selectedPods)),
 		Action:    "allow",
 	}
 
@@ -383,27 +391,27 @@ func (c *controller) buildIngressRule(selectedPods []PodInfo, ingressRule networ
 	// Process from rules
 	if len(ingressRule.From) > 0 {
 		for _, from := range ingressRule.From {
-			c.processNetworkPolicyPeer(from, rule, namespace)
+			c.processNetworkPolicyPeer(ctx, from, rule, namespace)
 		}
 	} else {
 		// Empty from means allow from anywhere
-		rule.AllowedCIDRs = []net.IPNet{
-			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
-			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		rule.AllowedCIDRs = []netip.Prefix{
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
 		}
 	}
 
 	return rule
 }
 
-func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networkingv1.NetworkPolicyEgressRule, namespace string) *firewall.NetworkPolicyRule {
+func (c *controller) buildEgressRule(ctx context.Context, selectedPods []PodInfo, egressRule networkingv1.NetworkPolicyEgressRule, namespace string) *firewall.NetworkPolicyRule {
 	if len(selectedPods) == 0 {
 		return nil
 	}
 
 	rule := &firewall.NetworkPolicyRule{
 		Direction: "egress",
-		PodIPs:    make([]net.IP, 0, len(selectedPods)),
+		PodIPs:    make([]netip.Addr, 0, len(selectedPods)),
 		Action:    "allow",
 	}
 
@@ -428,20 +436,20 @@ func (c *controller) buildEgressRule(selectedPods []PodInfo, egressRule networki
 	// Process to rules
 	if len(egressRule.To) > 0 {
 		for _, to := range egressRule.To {
-			c.processNetworkPolicyPeer(to, rule, namespace)
+			c.processNetworkPolicyPeer(ctx, to, rule, namespace)
 		}
 	} else {
 		// Empty to means allow to anywhere
-		rule.AllowedCIDRs = []net.IPNet{
-			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
-			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
+		rule.AllowedCIDRs = []netip.Prefix{
+			netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+			netip.PrefixFrom(netip.IPv6Unspecified(), 0),
 		}
 	}
 
 	return rule
 }
 
-func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer, rule *firewall.NetworkPolicyRule, currentNamespace string) {
+func (c *controller) processNetworkPolicyPeer(ctx context.Context, peer networkingv1.NetworkPolicyPeer, rule *firewall.NetworkPolicyRule, currentNamespace string) {
 	// Handle podSelector
 	if peer.PodSelector != nil {
 		targetNamespace := currentNamespace
@@ -450,7 +458,7 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 			for nsName, nsLabels := range c.namespaces {
 				nsSelector, err := metav1.LabelSelectorAsSelector(peer.NamespaceSelector)
 				if err == nil && nsSelector.Matches(labels.Set(nsLabels)) {
-					pods := c.selectPods(nsName, *peer.PodSelector)
+					pods := c.selectPods(ctx, nsName, *peer.PodSelector)
 					for _, pod := range pods {
 						rule.AllowedIPs = append(rule.AllowedIPs, pod.IP)
 					}
@@ -458,7 +466,7 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 			}
 		} else {
 			// Just pod selector in current namespace
-			pods := c.selectPods(targetNamespace, *peer.PodSelector)
+			pods := c.selectPods(ctx, targetNamespace, *peer.PodSelector)
 			for _, pod := range pods {
 				rule.AllowedIPs = append(rule.AllowedIPs, pod.IP)
 			}
@@ -479,10 +487,9 @@ func (c *controller) processNetworkPolicyPeer(peer networkingv1.NetworkPolicyPee
 
 	// Handle ipBlock
 	if peer.IPBlock != nil {
-		_, cidr, err := net.ParseCIDR(peer.IPBlock.CIDR)
+		prefix, err := netip.ParsePrefix(peer.IPBlock.CIDR)
 		if err == nil {
-			rule.AllowedCIDRs = append(rule.AllowedCIDRs, *cidr)
+			rule.AllowedCIDRs = append(rule.AllowedCIDRs, prefix)
 		}
 	}
 }
-
