@@ -71,6 +71,9 @@ func TestFirewallManagerChannels(t *testing.T) {
 	podCIDRUpdates := make(chan []netip.Prefix)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule)
 
-	manager := firewall.New(podCIDRUpdates, policyUpdates)
+	manager, err := firewall.New(podCIDRUpdates, policyUpdates)
+	if err != nil {
+		t.Skipf("firewall backend not available: %v", err)
+	}
 	assert.NotNil(t, manager)
 }

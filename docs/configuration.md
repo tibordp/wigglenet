@@ -34,15 +34,24 @@ networking:
 
 In the future Wireguard may provide additional modes, such as automatic network discovery based on uplink network interface or other metadata provided by the cloud provider.
 
+## Firewall backend
+
+Wigglenet supports two firewall backends, controlled by the `FIREWALL_BACKEND` environment variable:
+
+- `nftables` (default) - uses nftables via the `nft` command. This is the recommended backend for modern kernels (4.x+). It uses a single `inet` family table (`wigglenet`) that handles both IPv4 and IPv6 rules together, nftables sets for efficient CIDR matching, and atomic transactions for rule updates.
+- `iptables` - uses the legacy iptables/ip6tables commands. This backend maintains separate IPv4 and IPv6 rule sets and requires the `/run/xtables.lock` host path mount for safe concurrent access.
+
+When using the `iptables` backend, the `/run/xtables.lock` volume mount is required to prevent concurrent iptables access issues. This mount can be omitted when using the `nftables` backend.
+
 ## Firewall configuration
 
 Masquerading can be switched on or off per address family by `MASQUERADE_IPV4` and `MASQUERADE_IPV6` environment variables. If Wireguard is set up to hand out public IPv6 addresses to pods, masquerading should be turned off for IPv6.
 
-There are two additional options that control the firewall rules: `FILTER_IPV4` and `FILTER_IPV6`. If set to true, Wireguard will install basic stateful firewall rules for that address family preventing direct connectivity to pods from outside the cluster (egress traffic is not affected and neither are workloads exposed through NodePort and LoadBalancer services).
+There are two additional options that control the firewall rules: `FILTER_IPV4` and `FILTER_IPV6`. If set to true, Wigglenet will install basic stateful firewall rules for that address family preventing direct connectivity to pods from outside the cluster (egress traffic is not affected and neither are workloads exposed through NodePort and LoadBalancer services).
 
 ## NetworkPolicy support
 
-NetworkPolicy enforcement can be controlled via the `ENABLE_NETWORK_POLICY` environment variable (default: true). When enabled, Wigglenet will watch for Kubernetes NetworkPolicy resources and enforce them using iptables rules.
+NetworkPolicy enforcement can be controlled via the `ENABLE_NETWORK_POLICY` environment variable (default: true). When enabled, Wigglenet will watch for Kubernetes NetworkPolicy resources and enforce them using the selected firewall backend (nftables or iptables).
 
 **Important**: NetworkPolicy rules are applied independently of the `FILTER_IPV4` and `FILTER_IPV6` settings. This means:
 - If `FILTER_IPV4=0` but you have NetworkPolicies, IPv4 policy rules will still be enforced

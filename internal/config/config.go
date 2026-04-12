@@ -13,6 +13,13 @@ const (
 	SourceFile PodCIDRSource = "file"
 )
 
+type FirewallBackend string
+
+const (
+	BackendNftables FirewallBackend = "nftables"
+	BackendIptables FirewallBackend = "iptables"
+)
+
 type IPFamily string
 
 const (
@@ -64,6 +71,9 @@ var (
 
 	// Enable NetworkPolicy support
 	EnableNetworkPolicy bool = GetEnvOrDefaultBool("ENABLE_NETWORK_POLICY", true)
+
+	// Firewall backend: "nftables" (default) or "iptables"
+	FirewallBackendMode FirewallBackend = FirewallBackend(GetEnvOrDefault("FIREWALL_BACKEND", string(BackendNftables)))
 )
 
 func GetEnvOrDefault(name string, fallback string) string {

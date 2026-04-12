@@ -34,7 +34,10 @@ func New(ctx context.Context) (Wigglenet, error) {
 	// Create separate channels for firewall manager
 	podCIDRUpdates := make(chan []netip.Prefix)
 	policyUpdates := make(chan []firewall.NetworkPolicyRule)
-	firewallManager := firewall.New(podCIDRUpdates, policyUpdates)
+	firewallManager, err := firewall.New(podCIDRUpdates, policyUpdates)
+	if err != nil {
+		return nil, err
+	}
 
 	var ctrl controller.Controller
 	var publicKey []byte
