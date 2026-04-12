@@ -22,7 +22,7 @@ func TestSyncFilterWithGlobalFiltering(t *testing.T) {
 	config.FilterIPv6 = true
 
 	mockIptables := new(mocks.IpTables)
-	manager := new(firewallManager)
+	manager := new(iptablesManager)
 
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-FIREWALL")).Return(true, nil)
 
@@ -62,7 +62,7 @@ func TestSyncFilterNetworkPolicyOnly(t *testing.T) {
 	config.FilterIPv6 = false
 
 	mockIptables := new(mocks.IpTables)
-	manager := new(firewallManager)
+	manager := new(iptablesManager)
 
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-FIREWALL")).Return(true, nil)
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-NETPOL")).Return(true, nil)
@@ -106,7 +106,7 @@ COMMIT
 func TestSyncNat(t *testing.T) {
 	_, ctx := ktesting.NewTestContext(t)
 	mockIptables := new(mocks.IpTables)
-	manager := new(firewallManager)
+	manager := new(iptablesManager)
 
 	mockIptables.On("EnsureChain", iptables.Table("nat"), iptables.Chain("WIGGLENET-MASQ")).Return(true, nil)
 	mockIptables.On("EnsureRule", iptables.Append, iptables.Table("nat"), iptables.ChainPostrouting,

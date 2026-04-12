@@ -1,4 +1,4 @@
-FROM golang:1.25 AS ip-tables-wrapper
+FROM golang:1.26 AS ip-tables-wrapper
 
 WORKDIR /tmp/
 RUN git clone https://github.com/kubernetes-sigs/iptables-wrappers.git
@@ -6,7 +6,7 @@ RUN cd iptables-wrappers && \
     make build
 
 
-FROM golang:1.25 AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR $GOPATH/src/github.com/tibordp/wigglenet
 
@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
     /wigglenetd ./cmd/wigglenet
 
 FROM alpine:3.22
-RUN apk --no-cache add ca-certificates bash iptables iptables-legacy
+RUN apk --no-cache add ca-certificates bash iptables iptables-legacy nftables
 COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/bin/iptables-wrapper /iptables-wrapper
 COPY --from=ip-tables-wrapper /tmp/iptables-wrappers/iptables-wrapper-installer.sh /iptables-wrapper-installer.sh
 
