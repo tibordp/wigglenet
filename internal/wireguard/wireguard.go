@@ -89,7 +89,7 @@ func getPeerCIDRs(peers []Peer) []netip.Prefix {
 		for _, cidr := range peer.PodCIDRs {
 			isIPv6 := cidr.Addr().Is6()
 			if (isIPv6 && !config.NativeRoutingIPv6) || (!isIPv6 && !config.NativeRoutingIPv4) {
-				routes = append(routes, peer.PodCIDRs...)
+				routes = append(routes, cidr)
 			}
 		}
 	}

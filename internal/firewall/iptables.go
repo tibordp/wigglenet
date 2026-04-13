@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	filterChain = ipt.Chain("WIGGLENET-FIREWALL")
-	netpolChain = ipt.Chain("WIGGLENET-NETPOL")
-	natChain    = ipt.Chain("WIGGLENET-MASQ")
+	filterChain      = ipt.Chain("WIGGLENET-FIREWALL")
+	netpolChain      = ipt.Chain("WIGGLENET-NETPOL")
+	netpolEgressChain  = ipt.Chain("WIGGLENET-NETPOL-EGR")
+	netpolIngressChain = ipt.Chain("WIGGLENET-NETPOL-ING")
+	natChain         = ipt.Chain("WIGGLENET-MASQ")
 
 	// Sync iptables every minute
 	syncInterval = 1 * time.Minute
@@ -205,6 +207,12 @@ func (c *iptablesManager) syncFilterRules(ctx context.Context, tables ipTables, 
 		if _, err := tables.EnsureChain(ipt.TableFilter, netpolChain); err != nil {
 			return err
 		}
+		if _, err := tables.EnsureChain(ipt.TableFilter, netpolEgressChain); err != nil {
+			return err
+		}
+		if _, err := tables.EnsureChain(ipt.TableFilter, netpolIngressChain); err != nil {
+			return err
+		}
 	}
 
 	lines := bytes.NewBuffer(nil)
@@ -212,7 +220,7 @@ func (c *iptablesManager) syncFilterRules(ctx context.Context, tables ipTables, 
 
 	// Main filter chain rules (only if global filtering is enabled)
 	if enableGlobalFiltering {
-		if _, err := tables.EnsureRule(ipt.Append, ipt.TableFilter, ipt.ChainForward,
+		if _, err := tables.EnsureRule(ipt.Prepend, ipt.TableFilter, ipt.ChainForward,
 			"-m", "comment", "--comment", "prevent direct ingress traffic to pods",
 			"-j", string(filterChain)); err != nil {
 			return err
@@ -239,14 +247,15 @@ func (c *iptablesManager) syncFilterRules(ctx context.Context, tables ipTables, 
 
 	// NetworkPolicy chain rules (set up if NetworkPolicy is enabled)
 	if enableNetworkPolicy {
-		// Always hook NetworkPolicy chain directly to FORWARD (independent of global filtering)
-		if _, err := tables.EnsureRule(ipt.Append, ipt.TableFilter, ipt.ChainForward,
+		// Insert at top of FORWARD so we run before KUBE-FORWARD's
+		// mark-based ACCEPT rule that would otherwise bypass policy checks.
+		if _, err := tables.EnsureRule(ipt.Prepend, ipt.TableFilter, ipt.ChainForward,
 			"-m", "comment", "--comment", "NetworkPolicy enforcement",
 			"-j", string(netpolChain)); err != nil {
 			return err
 		}
 
-		// Clear NetworkPolicy chain and set up baseline rules
+		// Main netpol chain: established/related, then jump to egress + ingress sub-chains
 		writeLine(lines, "-F", string(netpolChain))
 		writeLine(lines, ipt.MakeChainLine(netpolChain))
 
@@ -254,14 +263,21 @@ func (c *iptablesManager) syncFilterRules(ctx context.Context, tables ipTables, 
 		if isIPv6 {
 			writeRule(lines, ipt.Append, netpolChain, "-p", "ipv6-icmp", "-j", "RETURN")
 		}
+		writeRule(lines, ipt.Append, netpolChain, "-j", string(netpolEgressChain))
+		writeRule(lines, ipt.Append, netpolChain, "-j", string(netpolIngressChain))
+		writeRule(lines, ipt.Append, netpolChain, "-j", "RETURN")
 
-		// Add NetworkPolicy rules
+		// Egress sub-chain
+		writeLine(lines, "-F", string(netpolEgressChain))
+		writeLine(lines, ipt.MakeChainLine(netpolEgressChain))
+
+		// Ingress sub-chain
+		writeLine(lines, "-F", string(netpolIngressChain))
+		writeLine(lines, ipt.MakeChainLine(netpolIngressChain))
+
 		for _, rule := range policyRules {
 			c.writeNetworkPolicyRules(lines, rule, isIPv6)
 		}
-
-		// Default allow for traffic not covered by NetworkPolicies
-		writeRule(lines, ipt.Append, netpolChain, "-j", "RETURN")
 	}
 
 	writeLine(lines, "COMMIT")
@@ -273,99 +289,139 @@ func (c *iptablesManager) syncFilterRules(ctx context.Context, tables ipTables, 
 	return nil
 }
 
+// iptablesPortGroup holds a protocol and its associated port expressions,
+// grouped from the per-port PortRules in a NetworkPolicyRule.
+type iptablesPortGroup struct {
+	proto    string   // lowercase: "tcp", "udp", "sctp"
+	ports    []string // individual port or range expressions ("80", "8000:9000")
+	matchAll bool     // true if any entry has Port==0 → match all ports for this proto
+}
+
+func groupPortRulesForIPTables(portRules []PortRule) []iptablesPortGroup {
+	type acc struct {
+		ports    []string
+		matchAll bool
+	}
+	m := make(map[string]*acc)
+	// Preserve insertion order of protocols
+	var order []string
+
+	for _, pr := range portRules {
+		proto := strings.ToLower(pr.Protocol)
+		if proto != "tcp" && proto != "udp" && proto != "sctp" {
+			continue
+		}
+		a, ok := m[proto]
+		if !ok {
+			a = &acc{}
+			m[proto] = a
+			order = append(order, proto)
+		}
+		if pr.Port == 0 {
+			a.matchAll = true
+		} else if pr.EndPort > 0 && pr.EndPort != pr.Port {
+			a.ports = append(a.ports, strconv.Itoa(pr.Port)+":"+strconv.Itoa(pr.EndPort))
+		} else {
+			a.ports = append(a.ports, strconv.Itoa(pr.Port))
+		}
+	}
+
+	var groups []iptablesPortGroup
+	for _, proto := range order {
+		a := m[proto]
+		groups = append(groups, iptablesPortGroup{proto: proto, ports: a.ports, matchAll: a.matchAll})
+	}
+	return groups
+}
+
 func (c *iptablesManager) writeNetworkPolicyRules(lines *bytes.Buffer, rule NetworkPolicyRule, isIPv6 bool) {
+	// Pick the correct sub-chain based on direction
+	chain := netpolIngressChain
+	if rule.Direction == "egress" {
+		chain = netpolEgressChain
+	}
+
 	if rule.Action == "deny" {
-		// Generate deny rules for specific pods
 		for _, podIP := range rule.PodIPs {
-			// Skip if IP family doesn't match
 			if (isIPv6 && podIP.Is4()) || (!isIPv6 && podIP.Is6()) {
 				continue
 			}
-
-			// Build rule arguments for deny
 			args := []string{}
-
 			if rule.Direction == "ingress" {
 				args = append(args, "-d", podIP.String())
 			} else if rule.Direction == "egress" {
 				args = append(args, "-s", podIP.String())
 			}
-
 			args = append(args, "-j", "DROP")
-			writeRule(lines, ipt.Append, netpolChain, args...)
+			writeRule(lines, ipt.Append, chain, args...)
 		}
 		return
 	}
 
-	// Generate allow rules (original logic)
+	// Group port rules by protocol
+	protoGroups := groupPortRulesForIPTables(rule.PortRules)
+
 	for _, podIP := range rule.PodIPs {
-		// Skip if IP family doesn't match
 		if (isIPv6 && podIP.Is4()) || (!isIPv6 && podIP.Is6()) {
 			continue
 		}
 
-		// Build rule arguments
-		args := []string{}
-
+		baseArgs := []string{}
 		if rule.Direction == "ingress" {
-			args = append(args, "-d", podIP.String())
+			baseArgs = append(baseArgs, "-d", podIP.String())
 		} else if rule.Direction == "egress" {
-			args = append(args, "-s", podIP.String())
+			baseArgs = append(baseArgs, "-s", podIP.String())
 		}
 
-		// Add protocol if specified
-		if rule.Protocol != "" {
-			args = append(args, "-p", rule.Protocol)
-		}
-
-		// Add port restrictions if specified
-		if len(rule.Ports) > 0 && rule.Protocol != "" {
-			portStr := ""
-			for i, port := range rule.Ports {
-				if i > 0 {
-					portStr += ","
+		// Build list of arg sets: one per protocol group, or one empty set if no ports
+		var argSets [][]string
+		if len(protoGroups) == 0 {
+			argSets = append(argSets, append([]string{}, baseArgs...))
+		} else {
+			for _, pg := range protoGroups {
+				args := append([]string{}, baseArgs...)
+				args = append(args, "-p", pg.proto)
+				if !pg.matchAll && len(pg.ports) > 0 {
+					portStr := strings.Join(pg.ports, ",")
+					if len(pg.ports) == 1 && !strings.Contains(pg.ports[0], ":") {
+						args = append(args, "--dport", portStr)
+					} else {
+						args = append(args, "-m", "multiport", "--dports", portStr)
+					}
 				}
-				portStr += strconv.Itoa(port)
-			}
-			if strings.ToLower(rule.Protocol) == "tcp" {
-				args = append(args, "--dport", portStr)
-			} else if strings.ToLower(rule.Protocol) == "udp" {
-				args = append(args, "--dport", portStr)
+				argSets = append(argSets, args)
 			}
 		}
 
-		// Allow traffic from specific IPs
-		for _, allowedIP := range rule.AllowedIPs {
-			// Skip if IP family doesn't match
-			if (isIPv6 && allowedIP.Is4()) || (!isIPv6 && allowedIP.Is6()) {
-				continue
+		// Emit allow rules for each arg set × each allowed peer
+		for _, args := range argSets {
+			for _, allowedIP := range rule.AllowedIPs {
+				if (isIPv6 && allowedIP.Is4()) || (!isIPv6 && allowedIP.Is6()) {
+					continue
+				}
+				ruleArgs := append([]string{}, args...)
+				if rule.Direction == "ingress" {
+					ruleArgs = append(ruleArgs, "-s", allowedIP.String())
+				} else if rule.Direction == "egress" {
+					ruleArgs = append(ruleArgs, "-d", allowedIP.String())
+				}
+				ruleArgs = append(ruleArgs, "-j", "RETURN")
+				writeRule(lines, ipt.Append, chain, ruleArgs...)
 			}
 
-			ruleArgs := append([]string{}, args...)
-			if rule.Direction == "ingress" {
-				ruleArgs = append(ruleArgs, "-s", allowedIP.String())
-			} else if rule.Direction == "egress" {
-				ruleArgs = append(ruleArgs, "-d", allowedIP.String())
+			for _, allowedCIDR := range rule.AllowedCIDRs {
+				if (isIPv6 && allowedCIDR.Addr().Is4()) || (!isIPv6 && allowedCIDR.Addr().Is6()) {
+					continue
+				}
+				ruleArgs := append([]string{}, args...)
+				if rule.Direction == "ingress" {
+					ruleArgs = append(ruleArgs, "-s", allowedCIDR.String())
+				} else if rule.Direction == "egress" {
+					ruleArgs = append(ruleArgs, "-d", allowedCIDR.String())
+				}
+				ruleArgs = append(ruleArgs, "-j", "RETURN")
+				writeRule(lines, ipt.Append, chain, ruleArgs...)
 			}
-			ruleArgs = append(ruleArgs, "-j", "RETURN")
-			writeRule(lines, ipt.Append, netpolChain, ruleArgs...)
-		}
-
-		// Allow traffic from specific CIDRs
-		for _, allowedCIDR := range rule.AllowedCIDRs {
-			// Skip if IP family doesn't match
-			if (isIPv6 && allowedCIDR.Addr().Is4()) || (!isIPv6 && allowedCIDR.Addr().Is6()) {
-				continue
-			}
-
-			ruleArgs := append([]string{}, args...)
-			if rule.Direction == "ingress" {
-				ruleArgs = append(ruleArgs, "-s", allowedCIDR.String())
-			} else if rule.Direction == "egress" {
-				ruleArgs = append(ruleArgs, "-d", allowedCIDR.String())
-			}
-			ruleArgs = append(ruleArgs, "-j", "RETURN")
-			writeRule(lines, ipt.Append, netpolChain, ruleArgs...)
 		}
 	}
 }

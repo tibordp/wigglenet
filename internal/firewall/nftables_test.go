@@ -169,37 +169,41 @@ func TestNftablesSyncNetworkPolicy(t *testing.T) {
 	err := manager.syncRules(context.Background())
 	require.NoError(t, err)
 
-	// Verify netpol chain exists
-	netpolChain := fake.Table.Chains[nftNetpolChain]
-	require.NotNil(t, netpolChain)
+	// Verify netpol chain exists and has jumps to sub-chains
+	mainChain := fake.Table.Chains[nftNetpolChain]
+	require.NotNil(t, mainChain)
 
-	rules := netpolChain.Rules
-	// Should have: ct state, icmpv6, allow rule, deny rule (via set)
-	require.GreaterOrEqual(t, len(rules), 3)
+	assert.Equal(t, "ct state established,related accept", mainChain.Rules[0].Rule)
+	assert.Equal(t, "meta nfproto ipv6 meta l4proto icmpv6 accept", mainChain.Rules[1].Rule)
+	assert.Equal(t, "jump netpol-egress", mainChain.Rules[2].Rule)
+	assert.Equal(t, "jump netpol-ingress", mainChain.Rules[3].Rule)
 
-	assert.Equal(t, "ct state established,related accept", rules[0].Rule)
-	assert.Equal(t, "meta nfproto ipv6 meta l4proto icmpv6 accept", rules[1].Rule)
+	// Allow rule should be in the ingress sub-chain with "return" verdict
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
 
-	// Allow rule for the specific ingress policy
-	assert.Contains(t, rules[2].Rule, "ip6 daddr 2001:db8::1")
-	assert.Contains(t, rules[2].Rule, "ip6 saddr 2001:db8::2")
-	assert.Contains(t, rules[2].Rule, "accept")
+	foundAllow := false
+	for _, r := range ingressChain.Rules {
+		if containsAll(r.Rule, "ip6 daddr 2001:db8::1", "ip6 saddr 2001:db8::2", "return") {
+			foundAllow = true
+			break
+		}
+	}
+	assert.True(t, foundAllow, "expected ingress allow rule with return verdict")
 
-	// Verify deny set was populated
+	// Verify deny set was populated and deny rule is in ingress sub-chain
 	ingressV6Set := fake.Table.Sets[nftNetpolIngressV6]
 	require.NotNil(t, ingressV6Set)
 	assert.Len(t, ingressV6Set.Elements, 1)
 
-	// Verify deny rule using set
-	// Find the deny rule (it should reference the set)
 	foundDeny := false
-	for _, r := range rules {
+	for _, r := range ingressChain.Rules {
 		if r.Rule == "ip6 daddr @netpol-ingress-v6 drop" {
 			foundDeny = true
 			break
 		}
 	}
-	assert.True(t, foundDeny, "expected default deny rule using ingress set")
+	assert.True(t, foundDeny, "expected default deny rule in ingress sub-chain")
 }
 
 func TestNftablesNetworkPolicyWithPorts(t *testing.T) {
@@ -229,8 +233,7 @@ func TestNftablesNetworkPolicyWithPorts(t *testing.T) {
 			Direction:  "ingress",
 			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},
 			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.2")},
-			Ports:      []int{80},
-			Protocol:   "TCP",
+			PortRules:  []PortRule{{Protocol: "TCP", Port: 80}},
 			Action:     "allow",
 		},
 		{
@@ -243,19 +246,19 @@ func TestNftablesNetworkPolicyWithPorts(t *testing.T) {
 	err := manager.syncRules(context.Background())
 	require.NoError(t, err)
 
-	netpolChain := fake.Table.Chains[nftNetpolChain]
-	require.NotNil(t, netpolChain)
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
 
-	// Find the allow rule with port match
+	// Find the allow rule with port match in ingress sub-chain
 	foundAllow := false
-	for _, r := range netpolChain.Rules {
+	for _, r := range ingressChain.Rules {
 		if r.Rule != "" &&
-			containsAll(r.Rule, "ip daddr 10.0.0.1", "ip saddr 10.0.0.2", "meta l4proto tcp", "th dport 80", "accept") {
+			containsAll(r.Rule, "ip daddr 10.0.0.1", "ip saddr 10.0.0.2", "meta l4proto tcp", "th dport 80", "return") {
 			foundAllow = true
 			break
 		}
 	}
-	assert.True(t, foundAllow, "expected allow rule with port match")
+	assert.True(t, foundAllow, "expected allow rule with port match and return verdict")
 }
 
 func TestNftablesDualStack(t *testing.T) {
@@ -376,14 +379,14 @@ func TestNftablesNetworkPolicyMultiplePeers(t *testing.T) {
 	err := manager.syncRules(context.Background())
 	require.NoError(t, err)
 
-	netpolChain := fake.Table.Chains[nftNetpolChain]
-	require.NotNil(t, netpolChain)
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
 
-	// Should use anonymous set syntax for multiple peers
+	// Should use anonymous set syntax for multiple peers in ingress sub-chain
 	foundAnonSet := false
-	for _, r := range netpolChain.Rules {
+	for _, r := range ingressChain.Rules {
 		if r.Rule != "" &&
-			containsAll(r.Rule, "ip daddr 10.0.0.1", "ip saddr {", "10.0.0.2", "10.0.0.3", "10.0.0.4", "accept") {
+			containsAll(r.Rule, "ip daddr 10.0.0.1", "ip saddr {", "10.0.0.2", "10.0.0.3", "10.0.0.4", "return") {
 			foundAnonSet = true
 			break
 		}
@@ -430,33 +433,199 @@ func TestNftablesEgressPolicy(t *testing.T) {
 	err := manager.syncRules(context.Background())
 	require.NoError(t, err)
 
-	netpolChain := fake.Table.Chains[nftNetpolChain]
-	require.NotNil(t, netpolChain)
+	egressChain := fake.Table.Chains[nftNetpolEgressChain]
+	require.NotNil(t, egressChain)
 
-	// Verify egress allow rule
+	// Verify egress allow rule in egress sub-chain with return verdict
 	foundEgressAllow := false
-	for _, r := range netpolChain.Rules {
-		if containsAll(r.Rule, "ip saddr 10.0.0.1", "ip daddr 192.168.0.0/16", "accept") {
+	for _, r := range egressChain.Rules {
+		if containsAll(r.Rule, "ip saddr 10.0.0.1", "ip daddr 192.168.0.0/16", "return") {
 			foundEgressAllow = true
 			break
 		}
 	}
-	assert.True(t, foundEgressAllow, "expected egress allow rule")
+	assert.True(t, foundEgressAllow, "expected egress allow rule with return verdict")
 
-	// Verify egress deny set
+	// Verify egress deny set and deny rule in egress sub-chain
 	egressV4Set := fake.Table.Sets[nftNetpolEgressV4]
 	require.NotNil(t, egressV4Set)
 	assert.Len(t, egressV4Set.Elements, 1)
 
-	// Verify deny rule
 	foundDeny := false
-	for _, r := range netpolChain.Rules {
+	for _, r := range egressChain.Rules {
 		if r.Rule == "ip saddr @netpol-egress-v4 drop" {
 			foundDeny = true
 			break
 		}
 	}
-	assert.True(t, foundDeny, "expected default deny egress rule")
+	assert.True(t, foundDeny, "expected default deny egress rule in egress sub-chain")
+}
+
+func TestNftablesMixedProtocolPorts(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+	}()
+
+	config.FilterIPv4 = false
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = true
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPolicies = []NetworkPolicyRule{
+		{
+			Direction:  "ingress",
+			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.2")},
+			PortRules: []PortRule{
+				{Protocol: "TCP", Port: 80},
+				{Protocol: "UDP", Port: 53},
+			},
+			Action: "allow",
+		},
+		{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			Action:    "deny",
+		},
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
+
+	// Should have separate rules for TCP and UDP (not one combined rule)
+	foundTCP := false
+	foundUDP := false
+	for _, r := range ingressChain.Rules {
+		if containsAll(r.Rule, "meta l4proto tcp", "th dport 80", "return") {
+			foundTCP = true
+		}
+		if containsAll(r.Rule, "meta l4proto udp", "th dport 53", "return") {
+			foundUDP = true
+		}
+	}
+	assert.True(t, foundTCP, "expected TCP port 80 rule")
+	assert.True(t, foundUDP, "expected UDP port 53 rule")
+}
+
+func TestNftablesEndPort(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+	}()
+
+	config.FilterIPv4 = false
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = true
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPolicies = []NetworkPolicyRule{
+		{
+			Direction:  "ingress",
+			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.2")},
+			PortRules:  []PortRule{{Protocol: "TCP", Port: 8000, EndPort: 9000}},
+			Action:     "allow",
+		},
+		{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			Action:    "deny",
+		},
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
+
+	foundRange := false
+	for _, r := range ingressChain.Rules {
+		if containsAll(r.Rule, "meta l4proto tcp", "th dport 8000-9000", "return") {
+			foundRange = true
+			break
+		}
+	}
+	assert.True(t, foundRange, "expected port range 8000-9000 rule with return verdict")
+}
+
+func TestNftablesSCTPPort(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+	}()
+
+	config.FilterIPv4 = false
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = true
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPolicies = []NetworkPolicyRule{
+		{
+			Direction:  "ingress",
+			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.2")},
+			PortRules:  []PortRule{{Protocol: "SCTP", Port: 80}},
+			Action:     "allow",
+		},
+		{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.1")},
+			Action:    "deny",
+		},
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	ingressChain := fake.Table.Chains[nftNetpolIngressChain]
+	require.NotNil(t, ingressChain)
+
+	foundSCTP := false
+	for _, r := range ingressChain.Rules {
+		if containsAll(r.Rule, "meta l4proto sctp", "th dport 80", "return") {
+			foundSCTP = true
+			break
+		}
+	}
+	assert.True(t, foundSCTP, "expected SCTP port 80 rule with return verdict")
 }
 
 func containsAll(s string, substrs ...string) bool {

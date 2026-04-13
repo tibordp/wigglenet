@@ -8,12 +8,18 @@ import (
 	"github.com/tibordp/wigglenet/internal/util"
 )
 
+// PortRule represents a single protocol+port(+range) match from a NetworkPolicy.
+type PortRule struct {
+	Protocol string // "TCP", "UDP", or "SCTP"
+	Port     int    // 0 means any port for this protocol
+	EndPort  int    // 0 means single port (no range); >0 means port range [Port, EndPort]
+}
+
 type NetworkPolicyRule struct {
 	PodIPs       []netip.Addr
 	AllowedIPs   []netip.Addr
 	AllowedCIDRs []netip.Prefix
-	Ports        []int
-	Protocol     string
+	PortRules    []PortRule
 	Direction    string
 	Action       string // "allow" or "deny"
 }

@@ -18,11 +18,13 @@ const (
 	nftTable = "wigglenet"
 
 	// Chain names
-	nftForwardChain     = "forward"
-	nftPostroutingChain = "postrouting"
-	nftFirewallChain    = "firewall"
-	nftNetpolChain      = "netpol"
-	nftMasqueradeChain  = "masq"
+	nftForwardChain        = "forward"
+	nftPostroutingChain    = "postrouting"
+	nftFirewallChain       = "firewall"
+	nftNetpolChain         = "netpol"
+	nftNetpolEgressChain   = "netpol-egress"
+	nftNetpolIngressChain  = "netpol-ingress"
+	nftMasqueradeChain     = "masq"
 
 	// Set names
 	nftPodCIDRsV4         = "pod-cidrs-v4"
@@ -157,6 +159,8 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 		tx.Add(&knftables.Chain{Name: nftFirewallChain})
 	}
 	if enableNetpol {
+		tx.Add(&knftables.Chain{Name: nftNetpolEgressChain})
+		tx.Add(&knftables.Chain{Name: nftNetpolIngressChain})
 		tx.Add(&knftables.Chain{Name: nftNetpolChain})
 	}
 	if enableMasquerade {
@@ -285,28 +289,38 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 }
 
 func (c *nftablesManager) buildNetpolRules(tx *knftables.Transaction) {
+	// --- Main netpol chain: established/related, then jump to egress + ingress sub-chains ---
 	tx.Flush(&knftables.Chain{Name: nftNetpolChain})
 
-	// Allow established/related
 	tx.Add(&knftables.Rule{
 		Chain: nftNetpolChain,
 		Rule:  "ct state established,related accept",
 	})
-
-	// Always allow ICMPv6
 	tx.Add(&knftables.Rule{
 		Chain:   nftNetpolChain,
 		Rule:    "meta nfproto ipv6 meta l4proto icmpv6 accept",
 		Comment: knftables.PtrTo("allow ICMPv6 (RFC 4890)"),
 	})
+	tx.Add(&knftables.Rule{
+		Chain:   nftNetpolChain,
+		Rule:    "jump " + nftNetpolEgressChain,
+		Comment: knftables.PtrTo("check egress policies"),
+	})
+	tx.Add(&knftables.Rule{
+		Chain:   nftNetpolChain,
+		Rule:    "jump " + nftNetpolIngressChain,
+		Comment: knftables.PtrTo("check ingress policies"),
+	})
 
-	// Collect pods that have deny rules (affected by NetworkPolicy) for set-based default deny
+	// --- Populate egress and ingress sub-chains ---
+	tx.Flush(&knftables.Chain{Name: nftNetpolEgressChain})
+	tx.Flush(&knftables.Chain{Name: nftNetpolIngressChain})
+
 	ingressDenyV4 := make(map[netip.Addr]bool)
 	ingressDenyV6 := make(map[netip.Addr]bool)
 	egressDenyV4 := make(map[netip.Addr]bool)
 	egressDenyV6 := make(map[netip.Addr]bool)
 
-	// First pass: collect deny pod IPs and generate allow rules
 	for _, rule := range c.currentPolicies {
 		if rule.Action == "deny" {
 			for _, podIP := range rule.PodIPs {
@@ -327,16 +341,22 @@ func (c *nftablesManager) buildNetpolRules(tx *knftables.Transaction) {
 			continue
 		}
 
-		// Generate allow rules
+		// Allow rules use "return" verdict so the packet continues
+		// to the next sub-chain check instead of being accepted immediately.
 		c.addNetpolAllowRules(tx, rule)
 	}
 
-	// Create sets for default-deny pod IPs and add deny rules using sets
 	c.addNetpolDenySets(tx, ingressDenyV4, ingressDenyV6, egressDenyV4, egressDenyV6)
 }
 
 func (c *nftablesManager) addNetpolAllowRules(tx *knftables.Transaction, rule NetworkPolicyRule) {
-	// Build allowed sources/destinations
+	// Route to the correct sub-chain; use "return" so the packet
+	// continues to the next sub-chain instead of being accepted outright.
+	chain := nftNetpolIngressChain
+	if rule.Direction == "egress" {
+		chain = nftNetpolEgressChain
+	}
+
 	var v4Allowed, v6Allowed []string
 
 	for _, ip := range rule.AllowedIPs {
@@ -354,10 +374,8 @@ func (c *nftablesManager) addNetpolAllowRules(tx *knftables.Transaction, rule Ne
 		}
 	}
 
-	// Build port match expression
-	portMatch := buildPortMatch(rule)
+	portMatches := buildPortMatches(rule)
 
-	// Generate rules per pod IP
 	for _, podIP := range rule.PodIPs {
 		isV4 := podIP.Is4()
 
@@ -387,7 +405,6 @@ func (c *nftablesManager) addNetpolAllowRules(tx *knftables.Transaction, rule Ne
 			}
 		}
 
-		// Build peer match with anonymous set for multiple peers
 		if len(allowed) == 1 {
 			if isV4 {
 				if rule.Direction == "ingress" {
@@ -419,16 +436,21 @@ func (c *nftablesManager) addNetpolAllowRules(tx *knftables.Transaction, rule Ne
 			}
 		}
 
-		ruleStr := podMatch + " " + peerMatch
-		if portMatch != "" {
-			ruleStr += " " + portMatch
-		}
-		ruleStr += " accept"
+		base := podMatch + " " + peerMatch
 
-		tx.Add(&knftables.Rule{
-			Chain: nftNetpolChain,
-			Rule:  ruleStr,
-		})
+		if len(portMatches) == 0 {
+			tx.Add(&knftables.Rule{
+				Chain: chain,
+				Rule:  base + " return",
+			})
+		} else {
+			for _, pm := range portMatches {
+				tx.Add(&knftables.Rule{
+					Chain: chain,
+					Rule:  base + " " + pm + " return",
+				})
+			}
+		}
 	}
 }
 
@@ -490,54 +512,79 @@ func (c *nftablesManager) addNetpolDenySets(tx *knftables.Transaction,
 		})
 	}
 
-	// Default deny rules using set lookups
+	// Default deny rules in each sub-chain
 	if len(ingressDenyV4) > 0 {
 		tx.Add(&knftables.Rule{
-			Chain:   nftNetpolChain,
+			Chain:   nftNetpolIngressChain,
 			Rule:    knftables.Concat("ip daddr", "@", nftNetpolIngressV4, "drop"),
 			Comment: knftables.PtrTo("default deny ingress (IPv4)"),
 		})
 	}
 	if len(ingressDenyV6) > 0 {
 		tx.Add(&knftables.Rule{
-			Chain:   nftNetpolChain,
+			Chain:   nftNetpolIngressChain,
 			Rule:    knftables.Concat("ip6 daddr", "@", nftNetpolIngressV6, "drop"),
 			Comment: knftables.PtrTo("default deny ingress (IPv6)"),
 		})
 	}
 	if len(egressDenyV4) > 0 {
 		tx.Add(&knftables.Rule{
-			Chain:   nftNetpolChain,
+			Chain:   nftNetpolEgressChain,
 			Rule:    knftables.Concat("ip saddr", "@", nftNetpolEgressV4, "drop"),
 			Comment: knftables.PtrTo("default deny egress (IPv4)"),
 		})
 	}
 	if len(egressDenyV6) > 0 {
 		tx.Add(&knftables.Rule{
-			Chain:   nftNetpolChain,
+			Chain:   nftNetpolEgressChain,
 			Rule:    knftables.Concat("ip6 saddr", "@", nftNetpolEgressV6, "drop"),
 			Comment: knftables.PtrTo("default deny egress (IPv6)"),
 		})
 	}
 }
 
-func buildPortMatch(rule NetworkPolicyRule) string {
-	if rule.Protocol == "" || len(rule.Ports) == 0 {
-		return ""
+// buildPortMatches groups PortRules by protocol and returns one nftables match
+// expression per protocol group. Returns nil when there are no port restrictions.
+func buildPortMatches(rule NetworkPolicyRule) []string {
+	if len(rule.PortRules) == 0 {
+		return nil
 	}
 
-	proto := strings.ToLower(rule.Protocol)
-	if proto != "tcp" && proto != "udp" {
-		return ""
+	type protoGroup struct {
+		ports      []string
+		hasAnyPort bool // true if any entry has Port==0 (match all ports)
+	}
+	groups := make(map[string]*protoGroup)
+
+	for _, pr := range rule.PortRules {
+		proto := strings.ToLower(pr.Protocol)
+		if proto != "tcp" && proto != "udp" && proto != "sctp" {
+			continue
+		}
+		g, ok := groups[proto]
+		if !ok {
+			g = &protoGroup{}
+			groups[proto] = g
+		}
+		if pr.Port == 0 {
+			g.hasAnyPort = true
+		} else if pr.EndPort > 0 && pr.EndPort != pr.Port {
+			g.ports = append(g.ports, strconv.Itoa(pr.Port)+"-"+strconv.Itoa(pr.EndPort))
+		} else {
+			g.ports = append(g.ports, strconv.Itoa(pr.Port))
+		}
 	}
 
-	if len(rule.Ports) == 1 {
-		return knftables.Concat("meta l4proto", proto, "th dport", rule.Ports[0])
+	var matches []string
+	for proto, g := range groups {
+		if g.hasAnyPort || len(g.ports) == 0 {
+			matches = append(matches, "meta l4proto "+proto)
+		} else if len(g.ports) == 1 {
+			matches = append(matches, knftables.Concat("meta l4proto", proto, "th dport", g.ports[0]))
+		} else {
+			matches = append(matches, knftables.Concat("meta l4proto", proto, "th dport { "+strings.Join(g.ports, ", ")+" }"))
+		}
 	}
 
-	ports := make([]string, len(rule.Ports))
-	for i, p := range rule.Ports {
-		ports[i] = strconv.Itoa(p)
-	}
-	return knftables.Concat("meta l4proto", proto, "th dport { "+strings.Join(ports, ", ")+" }")
+	return matches
 }

@@ -31,8 +31,7 @@ func TestSeparateChannelArchitecture(t *testing.T) {
 			Direction:  "ingress",
 			PodIPs:     []netip.Addr{netip.MustParseAddr("10.0.0.10")},
 			AllowedIPs: []netip.Addr{netip.MustParseAddr("10.0.0.20")},
-			Ports:      []int{80},
-			Protocol:   "TCP",
+			PortRules:  []firewall.PortRule{{Protocol: "TCP", Port: 80}},
 			Action:     "allow",
 		},
 	}
@@ -57,9 +56,9 @@ func TestSeparateChannelArchitecture(t *testing.T) {
 		assert.Equal(t, "ingress", receivedPolicies[0].Direction)
 		assert.Equal(t, "10.0.0.10", receivedPolicies[0].PodIPs[0].String())
 		assert.Equal(t, "10.0.0.20", receivedPolicies[0].AllowedIPs[0].String())
-		assert.Len(t, receivedPolicies[0].Ports, 1)
-		assert.Equal(t, 80, receivedPolicies[0].Ports[0])
-		assert.Equal(t, "TCP", receivedPolicies[0].Protocol)
+		assert.Len(t, receivedPolicies[0].PortRules, 1)
+		assert.Equal(t, 80, receivedPolicies[0].PortRules[0].Port)
+		assert.Equal(t, "TCP", receivedPolicies[0].PortRules[0].Protocol)
 		assert.Equal(t, "allow", receivedPolicies[0].Action)
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Timed out waiting for policy update")
