@@ -30,6 +30,19 @@ rules:
       - get
       - list
       - watch
+  # Required for kube-rbac-proxy to perform SubjectAccessReviews
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -49,6 +62,21 @@ kind: ServiceAccount
 metadata:
   name: wigglenet
   namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wigglenet-rbac-proxy-config
+  namespace: kube-system
+data:
+  config-file.yaml: |
+    authorization:
+      resourceAttributes:
+        namespace: kube-system
+        apiVersion: v1
+        resource: services
+        subresource: wigglenet
+        name: wigglenet
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -71,6 +99,7 @@ spec:
       - operator: Exists
       serviceAccountName: wigglenet
       priorityClassName: system-node-critical
+      automountServiceAccountToken: true
       containers:
       - name: wigglenet
         image: ghcr.io/tibordp/wigglenet:v0.5.0
@@ -139,18 +168,15 @@ spec:
         - name: ENABLE_METRICS
           value: "1"
 
-          # Metrics server bind address
+          # Bind metrics on localhost only — kube-rbac-proxy sidecar
+          # handles external access with Kubernetes authentication.
         - name: METRICS_BIND_ADDR
-          value: ":9091"
+          value: "127.0.0.1:9091"
 
         - name: NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        ports:
-        - name: metrics
-          containerPort: 9091
-          protocol: TCP
         volumeMounts:
         - name: cfg
           mountPath: /etc/wigglenet
@@ -174,6 +200,40 @@ spec:
           privileged: false
           capabilities:
             add: ["NET_RAW", "NET_ADMIN"]
+      # kube-rbac-proxy authenticates metrics scrape requests using
+      # Kubernetes TokenReview/SubjectAccessReview so the metrics port
+      # can be safely exposed on the host network.
+      - name: kube-rbac-proxy
+        image: quay.io/brancz/kube-rbac-proxy:v0.20.1
+        args:
+        - --secure-listen-address=:9091
+        - --upstream=http://127.0.0.1:9091/
+        - --proxy-endpoints-port=9092
+        - --config-file=/etc/kube-rbac-proxy-config/config-file.yaml
+        ports:
+        - name: https-metrics
+          containerPort: 9091
+          protocol: TCP
+        - name: http-healthz
+          containerPort: 9092
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: healthz
+            port: 9092
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "20Mi"
+          limits:
+            cpu: "20m"
+            memory: "40Mi"
+        volumeMounts:
+        - name: kube-rbac-proxy-config
+          mountPath: /etc/kube-rbac-proxy-config
       volumes:
       - name: cfg
         hostPath:
@@ -189,22 +249,56 @@ spec:
       - name: lib-modules
         hostPath:
           path: /lib/modules
+      - name: kube-rbac-proxy-config
+        configMap:
+          name: wigglenet-rbac-proxy-config
 ---
-# PodMonitor for prometheus-operator / kube-prometheus-stack.
-# Scrapes the metrics endpoint on each wigglenet pod directly
-# (no Service needed since wigglenet uses hostNetwork).
+# ServiceMonitor for prometheus-operator / kube-prometheus-stack.
+# Uses HTTPS with bearer token authentication via kube-rbac-proxy.
 apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
+kind: ServiceMonitor
 metadata:
   name: wigglenet
   namespace: kube-system
   labels:
     app: wigglenet
 spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    port: https-metrics
+    path: /metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 30s
   selector:
     matchLabels:
       app: wigglenet
-  podMetricsEndpoints:
-  - port: metrics
-    path: /metrics
-    interval: 30s
+  # ---
+  # If you don't need kube-rbac-proxy authentication (e.g. trusted network),
+  # you can simplify the setup:
+  #
+  # 1. Remove the kube-rbac-proxy sidecar container, its ConfigMap, and the
+  #    authentication.k8s.io / authorization.k8s.io RBAC rules
+  # 2. Set METRICS_BIND_ADDR to ":9091" instead of "127.0.0.1:9091"
+  # 3. Add a named port to the wigglenet container:
+  #      ports:
+  #      - name: metrics
+  #        containerPort: 9091
+  # 4. Replace this ServiceMonitor with a PodMonitor:
+  #
+  #    apiVersion: monitoring.coreos.com/v1
+  #    kind: PodMonitor
+  #    metadata:
+  #      name: wigglenet
+  #      namespace: kube-system
+  #      labels:
+  #        app: wigglenet
+  #    spec:
+  #      selector:
+  #        matchLabels:
+  #          app: wigglenet
+  #      podMetricsEndpoints:
+  #      - port: metrics
+  #        path: /metrics
+  #        interval: 30s

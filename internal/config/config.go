@@ -76,8 +76,11 @@ var (
 	FirewallBackendMode FirewallBackend = FirewallBackend(GetEnvOrDefault("FIREWALL_BACKEND", string(BackendNftables)))
 
 	// Metrics settings
-	EnableMetrics   bool   = GetEnvOrDefaultBool("ENABLE_METRICS", false)
-	MetricsBindAddr string = GetEnvOrDefault("METRICS_BIND_ADDR", ":9091")
+	EnableMetrics        bool   = GetEnvOrDefaultBool("ENABLE_METRICS", false)
+	MetricsBindAddr      string = GetEnvOrDefault("METRICS_BIND_ADDR", ":9091")
+	MetricsTLSCertFile   string = GetEnvOrDefault("METRICS_TLS_CERT_FILE", "")
+	MetricsTLSKeyFile    string = GetEnvOrDefault("METRICS_TLS_KEY_FILE", "")
+	MetricsTLSClientCA   string = GetEnvOrDefault("METRICS_TLS_CLIENT_CA_FILE", "")
 
 	// Flowtable (fastpath) settings - nftables backend only
 	EnableFlowtable          bool   = GetEnvOrDefaultBool("ENABLE_FLOWTABLE", false)

@@ -1,0 +1,398 @@
+{
+  "__inputs": [],
+  "__elements": {},
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus" },
+    { "type": "panel", "id": "stat", "name": "Stat" },
+    { "type": "panel", "id": "timeseries", "name": "Time series" },
+    { "type": "panel", "id": "table", "name": "Table" }
+  ],
+  "id": null,
+  "uid": "wigglenet",
+  "title": "Wigglenet",
+  "description": "Kubernetes CNI plugin metrics: WireGuard tunnels, firewall sync, NetworkPolicy",
+  "tags": ["wigglenet", "kubernetes", "cni", "wireguard"],
+  "timezone": "browser",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "definition": "label_values(wigglenet_build_info, instance)",
+        "name": "instance",
+        "label": "Instance",
+        "includeAll": true,
+        "multi": true,
+        "query": { "query": "label_values(wigglenet_build_info, instance)" },
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Cluster Overview",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Nodes",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "targets": [
+        {
+          "expr": "count(wigglenet_build_info{instance=~\"$instance\"})",
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "title": "Version",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "options": { "colorMode": "none", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "mappings": [] }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "topk(1, wigglenet_build_info{instance=~\"$instance\"})",
+          "legendFormat": "{{version}} ({{firewall_backend}})",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } }
+      ]
+    },
+    {
+      "title": "Total Pod CIDRs",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [
+        {
+          "expr": "max(wigglenet_pod_cidrs_total{instance=~\"$instance\"})",
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "title": "WireGuard Peers",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [
+        {
+          "expr": "max(wigglenet_peers_total{instance=~\"$instance\"})",
+          "legendFormat": ""
+        }
+      ]
+    },
+    {
+      "title": "NetworkPolicy Rules",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "targets": [
+        {
+          "expr": "max(wigglenet_network_policy_rules_total{instance=~\"$instance\", direction=\"ingress\"})",
+          "legendFormat": "ingress"
+        },
+        {
+          "expr": "max(wigglenet_network_policy_rules_total{instance=~\"$instance\", direction=\"egress\"})",
+          "legendFormat": "egress"
+        }
+      ]
+    },
+    {
+      "title": "Firewall Sync Errors",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(wigglenet_firewall_sync_total{instance=~\"$instance\", status=\"error\"}[$__rate_interval]))",
+          "legendFormat": "errors/s"
+        }
+      ]
+    },
+    {
+      "title": "Firewall",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "title": "Firewall Sync Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "unit": "ops"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, status) (rate(wigglenet_firewall_sync_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{status}}"
+        }
+      ]
+    },
+    {
+      "title": "Firewall Sync Duration",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(wigglenet_firewall_sync_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} p99"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(wigglenet_firewall_sync_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} p50"
+        }
+      ]
+    },
+    {
+      "title": "WireGuard Tunnels",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false
+    },
+    {
+      "title": "Peer Traffic (Receive)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } },
+          "unit": "Bps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(wigglenet_peer_receive_bytes_total{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} <- {{endpoint}}"
+        }
+      ]
+    },
+    {
+      "title": "Peer Traffic (Transmit)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } },
+          "unit": "Bps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(wigglenet_peer_transmit_bytes_total{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} -> {{endpoint}}"
+        }
+      ]
+    },
+    {
+      "title": "Last Handshake Age",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 0 },
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 180 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "wigglenet_peer_last_handshake_seconds{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} <-> {{endpoint}}"
+        }
+      ]
+    },
+    {
+      "title": "Peer Status",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Handshake Age", "desc": true }] },
+      "fieldConfig": {
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value #Handshake" },
+            "properties": [
+              { "id": "displayName", "value": "Handshake Age" },
+              { "id": "unit", "value": "s" },
+              { "id": "thresholds", "value": { "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 180 },
+                { "color": "red", "value": 300 }
+              ]}},
+              { "id": "custom.displayMode", "value": "color-background" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Value #RX" },
+            "properties": [
+              { "id": "displayName", "value": "RX Rate" },
+              { "id": "unit", "value": "Bps" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Value #TX" },
+            "properties": [
+              { "id": "displayName", "value": "TX Rate" },
+              { "id": "unit", "value": "Bps" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "public_key" },
+            "properties": [{ "id": "displayName", "value": "Public Key" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "endpoint" },
+            "properties": [{ "id": "displayName", "value": "Endpoint" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "instance" },
+            "properties": [{ "id": "displayName", "value": "Node" }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "wigglenet_peer_last_handshake_seconds{instance=~\"$instance\"}",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table",
+          "refId": "Handshake"
+        },
+        {
+          "expr": "rate(wigglenet_peer_receive_bytes_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table",
+          "refId": "RX"
+        },
+        {
+          "expr": "rate(wigglenet_peer_transmit_bytes_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "",
+          "instant": true,
+          "format": "table",
+          "refId": "TX"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "includeByName": {
+              "instance": true,
+              "endpoint": true,
+              "public_key": true,
+              "Value #Handshake": true,
+              "Value #RX": true,
+              "Value #TX": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "NetworkPolicy",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false
+    },
+    {
+      "title": "NetworkPolicy Rules",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (direction) (wigglenet_network_policy_rules_total{instance=~\"$instance\"})",
+          "legendFormat": "{{direction}}"
+        }
+      ]
+    },
+    {
+      "title": "Pod CIDRs / Peers",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(wigglenet_pod_cidrs_total{instance=~\"$instance\"})",
+          "legendFormat": "pod CIDRs"
+        },
+        {
+          "expr": "max(wigglenet_peers_total{instance=~\"$instance\"})",
+          "legendFormat": "peers"
+        }
+      ]
+    }
+  ],
+  "time": { "from": "now-1h", "to": "now" },
+  "version": 1
+}
