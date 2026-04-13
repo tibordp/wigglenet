@@ -628,6 +628,199 @@ func TestNftablesSCTPPort(t *testing.T) {
 	assert.True(t, foundSCTP, "expected SCTP port 80 rule with return verdict")
 }
 
+func TestNftablesFlowtableEnabled(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	origFlowtable := config.EnableFlowtable
+	origDevices := config.FlowtableDevices
+	origThreshold := config.FlowtablePacketThreshold
+	origBackend := config.FirewallBackendMode
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+		config.EnableFlowtable = origFlowtable
+		config.FlowtableDevices = origDevices
+		config.FlowtablePacketThreshold = origThreshold
+		config.FirewallBackendMode = origBackend
+	}()
+
+	config.FilterIPv4 = true
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = false
+	config.EnableFlowtable = true
+	config.FlowtableDevices = "eth0,wigglenet"
+	config.FlowtablePacketThreshold = 64
+	config.FirewallBackendMode = config.BackendNftables
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPodCIDRs = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/24"),
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	// Verify flowtable was created
+	ft := fake.Table.Flowtables[nftFlowtable]
+	require.NotNil(t, ft, "expected flowtable to be created")
+	assert.Equal(t, []string{"eth0", "wigglenet"}, ft.Devices)
+	assert.Equal(t, knftables.FilterIngressPriority, *ft.Priority)
+
+	// Verify forward chain exists and has offload rule as first rule
+	fwdChain := fake.Table.Chains[nftForwardChain]
+	require.NotNil(t, fwdChain)
+	require.GreaterOrEqual(t, len(fwdChain.Rules), 2)
+
+	assert.Equal(t, "ct state established ct packets > 64 flow offload @fastpath", fwdChain.Rules[0].Rule)
+	assert.Equal(t, "jump firewall", fwdChain.Rules[1].Rule)
+}
+
+func TestNftablesFlowtableDisabled(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	origFlowtable := config.EnableFlowtable
+	origBackend := config.FirewallBackendMode
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+		config.EnableFlowtable = origFlowtable
+		config.FirewallBackendMode = origBackend
+	}()
+
+	config.FilterIPv4 = true
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = false
+	config.EnableFlowtable = false
+	config.FirewallBackendMode = config.BackendNftables
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPodCIDRs = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/24"),
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	// No flowtable should exist
+	assert.Empty(t, fake.Table.Flowtables)
+
+	// Forward chain should exist (filter is enabled) but no offload rule
+	fwdChain := fake.Table.Chains[nftForwardChain]
+	require.NotNil(t, fwdChain)
+	for _, r := range fwdChain.Rules {
+		assert.NotContains(t, r.Rule, "flow offload")
+	}
+}
+
+func TestNftablesFlowtableOnlyMode(t *testing.T) {
+	// Flowtable should create a forward chain even without filter or netpol
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	origFlowtable := config.EnableFlowtable
+	origDevices := config.FlowtableDevices
+	origThreshold := config.FlowtablePacketThreshold
+	origBackend := config.FirewallBackendMode
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+		config.EnableFlowtable = origFlowtable
+		config.FlowtableDevices = origDevices
+		config.FlowtablePacketThreshold = origThreshold
+		config.FirewallBackendMode = origBackend
+	}()
+
+	config.FilterIPv4 = false
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = false
+	config.EnableFlowtable = true
+	config.FlowtableDevices = "eth0"
+	config.FlowtablePacketThreshold = 20
+	config.FirewallBackendMode = config.BackendNftables
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	// Forward chain should be created for flowtable offload
+	fwdChain := fake.Table.Chains[nftForwardChain]
+	require.NotNil(t, fwdChain)
+	require.Len(t, fwdChain.Rules, 1)
+	assert.Equal(t, "ct state established ct packets > 20 flow offload @fastpath", fwdChain.Rules[0].Rule)
+
+	// No firewall or netpol chains
+	assert.Nil(t, fake.Table.Chains[nftFirewallChain])
+	assert.Nil(t, fake.Table.Chains[nftNetpolChain])
+}
+
+func TestNftablesFlowtableEmptyDevices(t *testing.T) {
+	// Empty devices should disable flowtable gracefully
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	origFlowtable := config.EnableFlowtable
+	origDevices := config.FlowtableDevices
+	origBackend := config.FirewallBackendMode
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+		config.EnableFlowtable = origFlowtable
+		config.FlowtableDevices = origDevices
+		config.FirewallBackendMode = origBackend
+	}()
+
+	config.FilterIPv4 = false
+	config.FilterIPv6 = false
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = false
+	config.EnableFlowtable = true
+	config.FlowtableDevices = ""
+	config.FirewallBackendMode = config.BackendNftables
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	// No flowtable or forward chain should be created
+	assert.Empty(t, fake.Table.Flowtables)
+	assert.Nil(t, fake.Table.Chains[nftForwardChain])
+}
+
 func containsAll(s string, substrs ...string) bool {
 	for _, sub := range substrs {
 		if !contains(s, sub) {

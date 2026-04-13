@@ -65,6 +65,26 @@ NetworkPolicy support requires additional RBAC permissions:
 
 These permissions are included in the default deployment manifests. If NetworkPolicy support is disabled (`ENABLE_NETWORK_POLICY=0`), these permissions are not required but can be safely left in place.
 
+## Flowtable (fastpath)
+
+When using the nftables backend, Wigglenet can offload established connections to an nftables [flowtable](https://wiki.nftables.org/wiki-nftables/index.php/Flowtables) for improved forwarding performance. After a connection has exchanged a configurable number of packets, subsequent packets bypass the full netfilter evaluation and are forwarded directly in the kernel fast path.
+
+This is controlled by three environment variables:
+
+- `ENABLE_FLOWTABLE` (default: `0`) - enable flowtable offloading
+- `FLOWTABLE_DEVICES` - comma-separated list of network interfaces to include in the flowtable (e.g. `eth0,wigglenet`). This is required when flowtable is enabled.
+- `FLOWTABLE_PACKET_THRESHOLD` (default: `128`) - number of packets in an established connection before offloading. Lower values offload sooner (better throughput for long flows), higher values keep flows in the normal path longer.
+
+**Requirements**: Linux kernel 4.16+ with the `nf_flow_table` module. Only supported with the `nftables` firewall backend.
+
+**Interaction with NetworkPolicy**: The flowtable offload rule runs before firewall and NetworkPolicy evaluation in the forward chain. This means:
+
+- New connections are always subject to full policy evaluation for the first N packets
+- Once offloaded, flows bypass NetworkPolicy checks entirely
+- If a NetworkPolicy changes after a flow is offloaded, the existing flow will not be re-evaluated until it times out or the flowtable is flushed
+
+This is the same semantic as the existing `ct state established,related accept` rules — connections that were allowed at establishment time continue to be forwarded. For most workloads this is the desired behavior and provides a significant throughput improvement.
+
 ## Firewall only mode and native routing
 
 Wigglenet can run in a firewall-only mode by passing `FIREWALL_ONLY=1` environment variable. Running in this mode will not provision a Wireguard tunnel and CNI configuration, but will only filter and masquerade traffic, similar to [ip-masq-agent](https://github.com/kubernetes-sigs/ip-masq-agent). Unlike `ip-masq-agent`, Wigglenet will automatically determine all the pod CIDRs that should not be masqueraded or filtered by watching Node objects, allowing for flexible subnetting.

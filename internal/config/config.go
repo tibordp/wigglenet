@@ -74,6 +74,11 @@ var (
 
 	// Firewall backend: "nftables" (default) or "iptables"
 	FirewallBackendMode FirewallBackend = FirewallBackend(GetEnvOrDefault("FIREWALL_BACKEND", string(BackendNftables)))
+
+	// Flowtable (fastpath) settings - nftables backend only
+	EnableFlowtable          bool   = GetEnvOrDefaultBool("ENABLE_FLOWTABLE", false)
+	FlowtableDevices         string = GetEnvOrDefault("FLOWTABLE_DEVICES", "")
+	FlowtablePacketThreshold int    = GetEnvOrDefaultInt("FLOWTABLE_PACKET_THRESHOLD", 128)
 )
 
 func GetEnvOrDefault(name string, fallback string) string {

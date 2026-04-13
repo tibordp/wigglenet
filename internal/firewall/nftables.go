@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/config"
+
 	klog "k8s.io/klog/v2"
 	"sigs.k8s.io/knftables"
 )
@@ -25,6 +26,9 @@ const (
 	nftNetpolEgressChain   = "netpol-egress"
 	nftNetpolIngressChain  = "netpol-ingress"
 	nftMasqueradeChain     = "masq"
+
+	// Flowtable name
+	nftFlowtable = "fastpath"
 
 	// Set names
 	nftPodCIDRsV4         = "pod-cidrs-v4"
@@ -111,6 +115,7 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 	enableFilter := config.FilterIPv4 || config.FilterIPv6
 	enableMasquerade := config.MasqueradeIPv4 || config.MasqueradeIPv6
 	enableNetpol := config.EnableNetworkPolicy
+	enableFlowtable := config.EnableFlowtable && config.FirewallBackendMode == config.BackendNftables
 
 	// Split pod CIDRs by family
 	var v4cidrs, v6cidrs []netip.Prefix
@@ -167,8 +172,22 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 		tx.Add(&knftables.Chain{Name: nftMasqueradeChain})
 	}
 
+	// --- Flowtable ---
+	if enableFlowtable {
+		devices := parseFlowtableDevices(config.FlowtableDevices)
+		if len(devices) > 0 {
+			tx.Add(&knftables.Flowtable{
+				Name:     nftFlowtable,
+				Priority: knftables.PtrTo(knftables.FilterIngressPriority),
+				Devices:  devices,
+			})
+		} else {
+			enableFlowtable = false
+		}
+	}
+
 	// --- Forward base chain ---
-	if enableFilter || enableNetpol {
+	if enableFilter || enableNetpol || enableFlowtable {
 		tx.Add(&knftables.Chain{
 			Name:     nftForwardChain,
 			Type:     knftables.PtrTo(knftables.FilterType),
@@ -177,6 +196,13 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 		})
 		tx.Flush(&knftables.Chain{Name: nftForwardChain})
 
+		if enableFlowtable {
+			tx.Add(&knftables.Rule{
+				Chain:   nftForwardChain,
+				Rule:    fmt.Sprintf("ct state established ct packets > %d flow offload @%s", config.FlowtablePacketThreshold, nftFlowtable),
+				Comment: knftables.PtrTo("offload established flows to fastpath"),
+			})
+		}
 		if enableFilter {
 			tx.Add(&knftables.Rule{
 				Chain:   nftForwardChain,
@@ -587,4 +613,17 @@ func buildPortMatches(rule NetworkPolicyRule) []string {
 	}
 
 	return matches
+}
+
+// parseFlowtableDevices splits a comma-separated device list and returns
+// non-empty trimmed device names.
+func parseFlowtableDevices(devices string) []string {
+	var result []string
+	for _, d := range strings.Split(devices, ",") {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			result = append(result, d)
+		}
+	}
+	return result
 }
