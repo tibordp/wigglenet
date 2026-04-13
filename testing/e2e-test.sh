@@ -11,6 +11,7 @@ NC='\033[0m' # No Color
 CLUSTER_NAME="${CLUSTER_NAME:-kind}"
 CLUSTER_CONFIG="${CLUSTER_CONFIG:-testing/cluster.yaml}"
 TIMEOUT="${TIMEOUT:-300}"
+FIREWALL_BACKEND="${FIREWALL_BACKEND:-nftables}"
 
 # Logging functions
 log_info() {
@@ -92,6 +93,7 @@ deploy_wigglenet() {
 
     sed 's|ghcr.io/tibordp/wigglenet:.*|wigglenet|g' ./deploy/manifest.yaml \
         | sed 's/Always/Never/g' \
+        | sed "s/value: \"nftables\"/value: \"${FIREWALL_BACKEND}\"/g" \
         | kubectl --context="kind-${CLUSTER_NAME}" apply -f -
 
     log_info "Waiting for wigglenet pods to be ready"
@@ -105,50 +107,35 @@ deploy_wigglenet() {
     sleep 5
 }
 
-# Check iptables/nftables backend consistency
-check_iptables_backend() {
-    log_step "Checking iptables/nftables backend consistency"
-
-    local nodes=$(kubectl --context="kind-${CLUSTER_NAME}" get nodes -o name | sed 's|node/||')
-    local first_node=$(echo "$nodes" | head -n1)
-    local backend=""
-
-    for node in $nodes; do
-        local node_backend=$(docker exec "${node}" iptables --version | grep -oE '(nf_tables|legacy)')
-
-        if [ -z "$backend" ]; then
-            backend="$node_backend"
-            log_info "Detected iptables backend: $backend"
-        elif [ "$backend" != "$node_backend" ]; then
-            log_error "Inconsistent iptables backend: $first_node uses $backend but $node uses $node_backend"
-            return 1
-        fi
-    done
-
-    log_info "All nodes using consistent backend: $backend"
-}
-
-# Verify iptables chains exist
-verify_iptables_chains() {
-    log_step "Verifying iptables chains"
+# Verify firewall rules are installed
+verify_firewall_rules() {
+    log_step "Verifying firewall rules (backend: ${FIREWALL_BACKEND})"
 
     local node="${CLUSTER_NAME}-control-plane"
-    local missing_chains=()
 
-    # Check for WIGGLENET chains in filter and nat tables
-    for family in iptables ip6tables; do
-        for table in filter nat; do
-            log_info "Checking $family table $table on $node"
-
-            local chains=$(docker exec "$node" $family-save -t "$table" 2>/dev/null || echo "")
-
-            if echo "$chains" | grep -q "KUBE-" && echo "$chains" | grep -q "WIGGLENET-"; then
-                log_info "✓ Both KUBE-* and WIGGLENET-* chains found in $family/$table"
-            elif echo "$chains" | grep -q "KUBE-"; then
-                log_warn "⚠ Found KUBE-* but no WIGGLENET-* chains in $family/$table"
+    if [ "$FIREWALL_BACKEND" = "iptables" ]; then
+        local found=false
+        for family in iptables ip6tables; do
+            local chains=$(docker exec "$node" $family-save -t filter 2>/dev/null || echo "")
+            if echo "$chains" | grep -q "WIGGLENET-NETPOL"; then
+                log_info "✓ WIGGLENET-NETPOL chain found in $family/filter"
+                found=true
             fi
         done
-    done
+        if [ "$found" = false ]; then
+            log_error "No WIGGLENET-NETPOL chains found in iptables"
+            return 1
+        fi
+    else
+        # nftables backend — check for wigglenet table
+        local rules=$(docker exec "$node" nft list table inet wigglenet 2>/dev/null || echo "")
+        if echo "$rules" | grep -q "chain netpol"; then
+            log_info "✓ nftables table 'wigglenet' with netpol chain found"
+        else
+            log_error "nftables wigglenet table or netpol chain not found"
+            return 1
+        fi
+    fi
 }
 
 # Create test pods
@@ -429,14 +416,13 @@ cleanup_test_pods() {
 # Main execution
 main() {
     log_info "Starting wigglenet E2E test"
-    log_info "Cluster: ${CLUSTER_NAME}, Config: ${CLUSTER_CONFIG}, Timeout: ${TIMEOUT}s"
+    log_info "Cluster: ${CLUSTER_NAME}, Config: ${CLUSTER_CONFIG}, Timeout: ${TIMEOUT}s, Backend: ${FIREWALL_BACKEND}"
 
     check_prerequisites
     create_cluster
     build_and_load_image
     deploy_wigglenet
-    check_iptables_backend
-    verify_iptables_chains
+    verify_firewall_rules
     create_test_pods
     test_connectivity
     test_network_policy
