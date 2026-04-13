@@ -1,0 +1,52 @@
+name: NetworkPolicy Conformance (Cyclonus)
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  cyclonus:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        firewall-backend: [nftables, iptables]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@latest
+
+      - name: Install cyclonus
+        run: go install github.com/mattfenwick/cyclonus/cmd/cyclonus@latest
+
+      - name: Create kind cluster
+        run: kind create cluster --config testing/cluster.yaml
+
+      - name: Build and load image
+        run: |
+          docker build -t wigglenet .
+          kind load docker-image wigglenet
+
+      - name: Deploy wigglenet (${{ matrix.firewall-backend }})
+        run: |
+          sed 's|ghcr.io/tibordp/wigglenet:.*|wigglenet|g' ./deploy/manifest.yaml \
+            | sed 's/Always/Never/g' \
+            | sed 's/value: "nftables"/value: "${{ matrix.firewall-backend }}"/g' \
+            | kubectl --context=kind-kind apply -f -
+          kubectl --context=kind-kind wait --for=condition=Ready \
+            -n kube-system pods -l app=wigglenet --timeout=120s
+          kubectl --context=kind-kind wait --for=condition=Ready \
+            nodes --all --timeout=120s
+
+      - name: Run cyclonus-quick
+        run: make cyclonus-quick
+
+      - name: Dump wigglenet logs on failure
+        if: failure()
+        run: kubectl --context=kind-kind logs -n kube-system -l app=wigglenet --tail=100
