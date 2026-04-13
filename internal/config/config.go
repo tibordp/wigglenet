@@ -75,6 +75,10 @@ var (
 	// Firewall backend: "nftables" (default) or "iptables"
 	FirewallBackendMode FirewallBackend = FirewallBackend(GetEnvOrDefault("FIREWALL_BACKEND", string(BackendNftables)))
 
+	// Metrics settings
+	EnableMetrics   bool   = GetEnvOrDefaultBool("ENABLE_METRICS", false)
+	MetricsBindAddr string = GetEnvOrDefault("METRICS_BIND_ADDR", ":9091")
+
 	// Flowtable (fastpath) settings - nftables backend only
 	EnableFlowtable          bool   = GetEnvOrDefaultBool("ENABLE_FLOWTABLE", false)
 	FlowtableDevices         string = GetEnvOrDefault("FLOWTABLE_DEVICES", "")

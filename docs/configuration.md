@@ -91,6 +91,32 @@ Wigglenet can run in a firewall-only mode by passing `FIREWALL_ONLY=1` environme
 
 Native routing is configured (`NATIVE_ROUTING_IPV4=1` / `NATIVE_ROUTING_IPV6=1`). Run in this mode, native routing will only be used for the selected address family instead of the Wireguard overlay. This assumes that there is something outside of the cluster that knows how to route packets for pods to the appropriate node, as generally the pod-to-pod traffic will be forwarded along the default route on each node.
 
+## Metrics
+
+Wigglenet can optionally expose Prometheus metrics and a health endpoint. This is controlled by two environment variables:
+
+- `ENABLE_METRICS` (default: `0`) - enable the metrics HTTP server
+- `METRICS_BIND_ADDR` (default: `:9091`) - address to bind the metrics server
+
+When enabled, the following endpoints are available:
+
+- `/metrics` - Prometheus metrics in text format
+- `/healthz` - simple health check (returns 200 OK)
+
+**Exposed metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `wigglenet_firewall_sync_total` | Counter | `backend`, `status` | Total firewall rule sync attempts |
+| `wigglenet_firewall_sync_duration_seconds` | Histogram | `backend` | Duration of firewall sync operations |
+| `wigglenet_pod_cidrs_total` | Gauge | | Current pod CIDRs tracked across all nodes |
+| `wigglenet_peers_total` | Gauge | | Current WireGuard peers configured |
+| `wigglenet_network_policy_rules_total` | Gauge | `direction` | Generated NetworkPolicy firewall rules |
+
+Since Wigglenet runs with `hostNetwork: true`, there is no Service needed for scraping. A `PodMonitor` resource (for prometheus-operator / kube-prometheus-stack) is the most appropriate way to configure scraping. See `deploy/manifest-metrics.yaml` for a complete example including the PodMonitor.
+
+**Note**: The metrics port (default 9091) is bound on the host network. Ensure this port does not conflict with other services on the node.
+
 ## Node address selection
 
 Wigglenet needs to be aware of the node's host address(es) in order to know where to terminate the Wireguard tunnel. In addition, node addresses need to be set as an allowed source IP in order to allow communication between the host and a pod running on another node. 

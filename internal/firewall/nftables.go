@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/config"
+	"github.com/tibordp/wigglenet/internal/metrics"
 
 	klog "k8s.io/klog/v2"
 	"sigs.k8s.io/knftables"
@@ -96,7 +97,11 @@ func (c *nftablesManager) Run(ctx context.Context) {
 			}
 		}
 
+		start := time.Now()
 		err := c.syncRules(ctx)
+		if config.EnableMetrics {
+			metrics.RecordFirewallSync("nftables", time.Since(start), err)
+		}
 		if err != nil {
 			logger.Error(err, "failed to sync nftables rules")
 		}
