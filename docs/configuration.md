@@ -93,10 +93,13 @@ Native routing is configured (`NATIVE_ROUTING_IPV4=1` / `NATIVE_ROUTING_IPV6=1`)
 
 ## Metrics
 
-Wigglenet can optionally expose Prometheus metrics and a health endpoint. This is controlled by two environment variables:
+Wigglenet can optionally expose Prometheus metrics and a health endpoint. This is controlled by the following environment variables:
 
 - `ENABLE_METRICS` (default: `0`) - enable the metrics HTTP server
 - `METRICS_BIND_ADDR` (default: `:9091`) - address to bind the metrics server
+- `METRICS_TLS_CERT_FILE` - path to TLS server certificate (enables HTTPS)
+- `METRICS_TLS_KEY_FILE` - path to TLS server private key
+- `METRICS_TLS_CLIENT_CA_FILE` - path to CA certificate for client verification (enables mTLS)
 
 When enabled, the following endpoints are available:
 
@@ -107,15 +110,29 @@ When enabled, the following endpoints are available:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
+| `wigglenet_build_info` | Gauge | `version`, `firewall_backend` | Build information (always 1) |
 | `wigglenet_firewall_sync_total` | Counter | `backend`, `status` | Total firewall rule sync attempts |
 | `wigglenet_firewall_sync_duration_seconds` | Histogram | `backend` | Duration of firewall sync operations |
 | `wigglenet_pod_cidrs_total` | Gauge | | Current pod CIDRs tracked across all nodes |
 | `wigglenet_peers_total` | Gauge | | Current WireGuard peers configured |
 | `wigglenet_network_policy_rules_total` | Gauge | `direction` | Generated NetworkPolicy firewall rules |
+| `wigglenet_peer_last_handshake_seconds` | Gauge | `public_key`, `endpoint` | Seconds since last WireGuard handshake |
+| `wigglenet_peer_receive_bytes_total` | Counter | `public_key`, `endpoint` | Bytes received from WireGuard peer |
+| `wigglenet_peer_transmit_bytes_total` | Counter | `public_key`, `endpoint` | Bytes transmitted to WireGuard peer |
+
+The WireGuard peer metrics (`wigglenet_peer_*`) are read directly from the kernel on each Prometheus scrape, so they are always fresh. These metrics are only available when WireGuard is active (not in firewall-only or native routing modes).
 
 Since Wigglenet runs with `hostNetwork: true`, there is no Service needed for scraping. A `PodMonitor` resource (for prometheus-operator / kube-prometheus-stack) is the most appropriate way to configure scraping. See `deploy/manifest-metrics.yaml` for a complete example including the PodMonitor.
 
-**Note**: The metrics port (default 9091) is bound on the host network. Ensure this port does not conflict with other services on the node.
+A sample Grafana dashboard is available at `docs/grafana-dashboard.json`.
+
+**Securing the metrics endpoint**: Since Wigglenet runs with `hostNetwork: true`, the metrics port is bound on the host's network interfaces and accessible to anything that can reach the node. There are several options to secure it:
+
+1. **kube-rbac-proxy sidecar** (recommended) — bind metrics on localhost and front it with [kube-rbac-proxy](https://github.com/brancz/kube-rbac-proxy), which authenticates scrape requests using Kubernetes TokenReview/SubjectAccessReview. This is the same approach used by node-exporter and kube-state-metrics. See `deploy/manifest-metrics.yaml` for a complete example.
+
+2. **mTLS** — set `METRICS_TLS_CERT_FILE`, `METRICS_TLS_KEY_FILE`, and `METRICS_TLS_CLIENT_CA_FILE` to require client certificate authentication. This should use a dedicated private CA (not a public CA), as any certificate signed by the CA will be accepted. Certificates are automatically reloaded when the files change on disk (e.g. after Secret rotation by kubelet or cert-manager), with no pod restart required. Prometheus supports client certificates via `tlsConfig.cert`/`tlsConfig.keySecret`/`tlsConfig.ca` in ServiceMonitor.
+
+3. **Localhost binding** — set `METRICS_BIND_ADDR=127.0.0.1:9091` to restrict access to localhost only. Simple but limits how Prometheus can scrape.
 
 ## Node address selection
 

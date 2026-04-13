@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -34,9 +35,20 @@ func (wg *wireguardLink) Type() string {
 	return "wireguard"
 }
 
+// PeerStats contains per-peer metrics read from the WireGuard device.
+type PeerStats struct {
+	PublicKey         string
+	Endpoint          string
+	LastHandshakeTime time.Time
+	ReceiveBytes      int64
+	TransmitBytes     int64
+}
+
 type Manager interface {
 	ApplyConfiguration(ctx context.Context, config *WireguardConfig, logger klog.Logger) error
 	PublicKey() []byte
+	// PeerStats reads current peer statistics from the WireGuard device.
+	PeerStats() ([]PeerStats, error)
 }
 
 type wireguardManager struct {
@@ -81,6 +93,29 @@ type Peer struct {
 
 func (c *wireguardManager) PublicKey() []byte {
 	return c.publicKey[:]
+}
+
+func (c *wireguardManager) PeerStats() ([]PeerStats, error) {
+	device, err := c.wgctrl.Device(c.link.Attrs().Name)
+	if err != nil {
+		return nil, err
+	}
+
+	stats := make([]PeerStats, 0, len(device.Peers))
+	for _, p := range device.Peers {
+		endpoint := ""
+		if p.Endpoint != nil {
+			endpoint = p.Endpoint.String()
+		}
+		stats = append(stats, PeerStats{
+			PublicKey:         p.PublicKey.String(),
+			Endpoint:          endpoint,
+			LastHandshakeTime: p.LastHandshakeTime,
+			ReceiveBytes:      p.ReceiveBytes,
+			TransmitBytes:     p.TransmitBytes,
+		})
+	}
+	return stats, nil
 }
 
 func getPeerCIDRs(peers []Peer) []netip.Prefix {

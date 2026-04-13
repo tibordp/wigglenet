@@ -49,20 +49,28 @@ func New(ctx context.Context) (Wigglenet, error) {
 		cniwriter := cni.NewCNIConfigWriter()
 		ctrl = controller.NewController(clientset, nil, cniwriter, podCIDRUpdates)
 	} else {
-		wireguard, err := wireguard.NewManager(ctx)
+		wg, err := wireguard.NewManager(ctx)
 		if err != nil {
 			return nil, err
 		}
 
 		cniwriter := cni.NewCNIConfigWriter()
-		ctrl = controller.NewController(clientset, wireguard, cniwriter, podCIDRUpdates)
-		publicKey = wireguard.PublicKey()
+		ctrl = controller.NewController(clientset, wg, cniwriter, podCIDRUpdates)
+		publicKey = wg.PublicKey()
+
+		if config.EnableMetrics {
+			metrics.RegisterWireGuardCollector(wg)
+		}
 	}
 
 	// Create NetworkPolicy controller if enabled
 	var netpolController networkpolicy.Controller
 	if config.EnableNetworkPolicy {
 		netpolController = networkpolicy.NewController(clientset, policyUpdates)
+	}
+
+	if config.EnableMetrics {
+		metrics.SetBuildInfo("0.5.0", string(config.FirewallBackendMode))
 	}
 
 	// Populate the node annotations
@@ -96,8 +104,16 @@ func (c *wigglenet) Run(ctx context.Context) {
 
 	// Start metrics server if enabled
 	if config.EnableMetrics {
+		var tlsCfg *metrics.TLSConfig
+		if config.MetricsTLSCertFile != "" {
+			tlsCfg = &metrics.TLSConfig{
+				CertFile:     config.MetricsTLSCertFile,
+				KeyFile:      config.MetricsTLSKeyFile,
+				ClientCAFile: config.MetricsTLSClientCA,
+			}
+		}
 		wg.StartWithContext(ctx, func(ctx context.Context) {
-			metrics.Run(ctx, config.MetricsBindAddr)
+			metrics.Run(ctx, config.MetricsBindAddr, tlsCfg)
 		})
 	}
 
