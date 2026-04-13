@@ -166,3 +166,62 @@ func SummarizeCIDRs(cidrs []netip.Prefix) []netip.Prefix {
 	results = append(results, summarizeCIDRs(cidrs, false)...)
 	return results
 }
+
+// splitPrefix splits a prefix into its two halves at one additional bit of prefix length.
+func splitPrefix(p netip.Prefix) (lower, upper netip.Prefix) {
+	bits := p.Bits()
+	addr := p.Addr()
+	newBits := bits + 1
+
+	// Lower half: same address with one more prefix bit
+	lower, _ = addr.Prefix(newBits)
+
+	// Upper half: flip the bit at position 'bits'
+	if addr.Is4() {
+		raw := addr.As4()
+		byteIdx := bits / 8
+		bitIdx := uint(7 - (bits % 8))
+		raw[byteIdx] |= 1 << bitIdx
+		upper = netip.PrefixFrom(netip.AddrFrom4(raw), newBits)
+	} else {
+		raw := addr.As16()
+		byteIdx := bits / 8
+		bitIdx := uint(7 - (bits % 8))
+		raw[byteIdx] |= 1 << bitIdx
+		upper = netip.PrefixFrom(netip.AddrFrom16(raw), newBits)
+	}
+	return
+}
+
+// subtractPrefix removes except from base, returning the remaining sub-prefixes.
+func subtractPrefix(base, except netip.Prefix) []netip.Prefix {
+	if !base.Overlaps(except) {
+		return []netip.Prefix{base}
+	}
+	// except covers all of base (same size or broader)
+	if except.Bits() <= base.Bits() {
+		return nil
+	}
+
+	lower, upper := splitPrefix(base)
+	if lower.Overlaps(except) {
+		result := subtractPrefix(lower, except)
+		return append(result, upper)
+	}
+	result := []netip.Prefix{lower}
+	return append(result, subtractPrefix(upper, except)...)
+}
+
+// SubtractPrefixes computes base minus all excepts, returning the remaining
+// set of prefixes. Used for IPBlock.Except in NetworkPolicy.
+func SubtractPrefixes(base netip.Prefix, excepts []netip.Prefix) []netip.Prefix {
+	result := []netip.Prefix{base}
+	for _, except := range excepts {
+		var newResult []netip.Prefix
+		for _, r := range result {
+			newResult = append(newResult, subtractPrefix(r, except)...)
+		}
+		result = newResult
+	}
+	return result
+}

@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/firewall"
+	"github.com/tibordp/wigglenet/internal/util"
 	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -25,10 +27,18 @@ type Controller interface {
 	Run(ctx context.Context)
 }
 
+// ContainerPort mirrors a relevant subset of v1.ContainerPort for named-port resolution.
+type ContainerPort struct {
+	Name          string
+	ContainerPort int32
+	Protocol      string // "TCP", "UDP", "SCTP"
+}
+
 type PodInfo struct {
-	IP        netip.Addr
-	Namespace string
-	Labels    map[string]string
+	IP             netip.Addr
+	Namespace      string
+	Labels         map[string]string
+	ContainerPorts []ContainerPort
 }
 
 type controller struct {
@@ -211,14 +221,31 @@ func (c *controller) updatePodsMap() {
 	for _, obj := range c.podIndexer.List() {
 		if pod, ok := obj.(*v1.Pod); ok {
 			if pod.Status.Phase == v1.PodRunning {
+				// Collect container ports for named-port resolution
+				var cPorts []ContainerPort
+				for _, container := range pod.Spec.Containers {
+					for _, cp := range container.Ports {
+						proto := "TCP"
+						if cp.Protocol != "" {
+							proto = string(cp.Protocol)
+						}
+						cPorts = append(cPorts, ContainerPort{
+							Name:          cp.Name,
+							ContainerPort: cp.ContainerPort,
+							Protocol:      proto,
+						})
+					}
+				}
+
 				// Handle dual-stack: read all pod IPs from status.podIPs
 				for _, podIPStatus := range pod.Status.PodIPs {
 					if podIPStatus.IP != "" {
 						if addr, err := netip.ParseAddr(podIPStatus.IP); err == nil {
 							newPods[addr] = PodInfo{
-								IP:        addr,
-								Namespace: pod.Namespace,
-								Labels:    pod.Labels,
+								IP:             addr,
+								Namespace:      pod.Namespace,
+								Labels:         pod.Labels,
+								ContainerPorts: cPorts,
 							}
 						}
 					}
@@ -227,10 +254,13 @@ func (c *controller) updatePodsMap() {
 				// Fallback to status.podIP for compatibility
 				if pod.Status.PodIP != "" {
 					if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil {
-						newPods[addr] = PodInfo{
-							IP:        addr,
-							Namespace: pod.Namespace,
-							Labels:    pod.Labels,
+						if _, exists := newPods[addr]; !exists {
+							newPods[addr] = PodInfo{
+								IP:             addr,
+								Namespace:      pod.Namespace,
+								Labels:         pod.Labels,
+								ContainerPorts: cPorts,
+							}
 						}
 					}
 				}
@@ -359,6 +389,19 @@ func (c *controller) selectPods(ctx context.Context, namespace string, selector 
 	return selected
 }
 
+// resolveNamedPort looks up a named port against a set of pods' container port
+// definitions. Returns the port number, or 0 if unresolvable.
+func resolveNamedPort(pods []PodInfo, portName string, protocol string) int {
+	for _, pod := range pods {
+		for _, cp := range pod.ContainerPorts {
+			if cp.Name == portName && cp.Protocol == protocol {
+				return int(cp.ContainerPort)
+			}
+		}
+	}
+	return 0
+}
+
 func (c *controller) buildIngressRule(ctx context.Context, selectedPods []PodInfo, ingressRule networkingv1.NetworkPolicyIngressRule, namespace string) *firewall.NetworkPolicyRule {
 	if len(selectedPods) == 0 {
 		return nil
@@ -370,22 +413,38 @@ func (c *controller) buildIngressRule(ctx context.Context, selectedPods []PodInf
 		Action:    "allow",
 	}
 
-	// Add pod IPs
 	for _, pod := range selectedPods {
 		rule.PodIPs = append(rule.PodIPs, pod.IP)
 	}
 
-	// Process ports
-	if len(ingressRule.Ports) > 0 {
-		for _, port := range ingressRule.Ports {
-			if port.Port != nil {
-				portValue := port.Port.IntValue()
-				rule.Ports = append(rule.Ports, portValue)
-			}
-			if port.Protocol != nil {
-				rule.Protocol = string(*port.Protocol)
+	// Process ports — resolve named ports against the selected (target) pods.
+	// If the original rule specified ports but none could be resolved,
+	// the rule should match nothing (return nil).
+	hasNamedPorts := false
+	for _, port := range ingressRule.Ports {
+		pr := firewall.PortRule{Protocol: "TCP"}
+		if port.Protocol != nil {
+			pr.Protocol = string(*port.Protocol)
+		}
+		if port.Port != nil {
+			if port.Port.Type == intstr.String {
+				hasNamedPorts = true
+				pr.Port = resolveNamedPort(selectedPods, port.Port.StrVal, pr.Protocol)
+				if pr.Port == 0 {
+					continue // unresolvable named port — skip this entry
+				}
+			} else {
+				pr.Port = port.Port.IntValue()
 			}
 		}
+		if port.EndPort != nil {
+			pr.EndPort = int(*port.EndPort)
+		}
+		rule.PortRules = append(rule.PortRules, pr)
+	}
+	// If all ports were named and none resolved, the rule matches nothing.
+	if hasNamedPorts && len(rule.PortRules) == 0 {
+		return nil
 	}
 
 	// Process from rules
@@ -415,22 +474,70 @@ func (c *controller) buildEgressRule(ctx context.Context, selectedPods []PodInfo
 		Action:    "allow",
 	}
 
-	// Add pod IPs
 	for _, pod := range selectedPods {
 		rule.PodIPs = append(rule.PodIPs, pod.IP)
 	}
 
-	// Process ports
-	if len(egressRule.Ports) > 0 {
-		for _, port := range egressRule.Ports {
-			if port.Port != nil {
-				portValue := port.Port.IntValue()
-				rule.Ports = append(rule.Ports, portValue)
+	// Collect destination pods from peer selectors for named-port resolution.
+	var destPods []PodInfo
+	for _, to := range egressRule.To {
+		if to.PodSelector != nil {
+			if to.NamespaceSelector != nil {
+				for nsName, nsLabels := range c.namespaces {
+					nsSelector, err := metav1.LabelSelectorAsSelector(to.NamespaceSelector)
+					if err == nil && nsSelector.Matches(labels.Set(nsLabels)) {
+						destPods = append(destPods, c.selectPods(ctx, nsName, *to.PodSelector)...)
+					}
+				}
+			} else {
+				destPods = append(destPods, c.selectPods(ctx, namespace, *to.PodSelector)...)
 			}
-			if port.Protocol != nil {
-				rule.Protocol = string(*port.Protocol)
+		} else if to.NamespaceSelector != nil {
+			for nsName, nsLabels := range c.namespaces {
+				nsSelector, err := metav1.LabelSelectorAsSelector(to.NamespaceSelector)
+				if err == nil && nsSelector.Matches(labels.Set(nsLabels)) {
+					for _, pod := range c.pods {
+						if pod.Namespace == nsName {
+							destPods = append(destPods, pod)
+						}
+					}
+				}
 			}
 		}
+	}
+	// If no specific destination pods (empty to = allow anywhere), resolve
+	// named ports against all known pods.
+	if len(destPods) == 0 {
+		for _, pod := range c.pods {
+			destPods = append(destPods, pod)
+		}
+	}
+
+	// Process ports — resolve named ports against destination pods.
+	hasNamedPorts := false
+	for _, port := range egressRule.Ports {
+		pr := firewall.PortRule{Protocol: "TCP"}
+		if port.Protocol != nil {
+			pr.Protocol = string(*port.Protocol)
+		}
+		if port.Port != nil {
+			if port.Port.Type == intstr.String {
+				hasNamedPorts = true
+				pr.Port = resolveNamedPort(destPods, port.Port.StrVal, pr.Protocol)
+				if pr.Port == 0 {
+					continue
+				}
+			} else {
+				pr.Port = port.Port.IntValue()
+			}
+		}
+		if port.EndPort != nil {
+			pr.EndPort = int(*port.EndPort)
+		}
+		rule.PortRules = append(rule.PortRules, pr)
+	}
+	if hasNamedPorts && len(rule.PortRules) == 0 {
+		return nil
 	}
 
 	// Process to rules
@@ -489,7 +596,17 @@ func (c *controller) processNetworkPolicyPeer(ctx context.Context, peer networki
 	if peer.IPBlock != nil {
 		prefix, err := netip.ParsePrefix(peer.IPBlock.CIDR)
 		if err == nil {
-			rule.AllowedCIDRs = append(rule.AllowedCIDRs, prefix)
+			if len(peer.IPBlock.Except) > 0 {
+				var excepts []netip.Prefix
+				for _, exceptStr := range peer.IPBlock.Except {
+					if ep, err := netip.ParsePrefix(exceptStr); err == nil {
+						excepts = append(excepts, ep)
+					}
+				}
+				rule.AllowedCIDRs = append(rule.AllowedCIDRs, util.SubtractPrefixes(prefix, excepts)...)
+			} else {
+				rule.AllowedCIDRs = append(rule.AllowedCIDRs, prefix)
+			}
 		}
 	}
 }

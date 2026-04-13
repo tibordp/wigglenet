@@ -26,7 +26,7 @@ func TestSyncFilterWithGlobalFiltering(t *testing.T) {
 
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-FIREWALL")).Return(true, nil)
 
-	mockIptables.On("EnsureRule", iptables.Append, iptables.Table("filter"), iptables.ChainForward,
+	mockIptables.On("EnsureRule", iptables.Prepend, iptables.Table("filter"), iptables.ChainForward,
 		"-m",
 		"comment",
 		"--comment",
@@ -66,9 +66,10 @@ func TestSyncFilterNetworkPolicyOnly(t *testing.T) {
 
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-FIREWALL")).Return(true, nil)
 	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-NETPOL")).Return(true, nil)
+	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-NETPOL-EGR")).Return(true, nil)
+	mockIptables.On("EnsureChain", iptables.Table("filter"), iptables.Chain("WIGGLENET-NETPOL-ING")).Return(true, nil)
 
-	// Direct NetworkPolicy rule should be installed when global filtering is disabled
-	mockIptables.On("EnsureRule", iptables.Append, iptables.Table("filter"), iptables.ChainForward,
+	mockIptables.On("EnsureRule", iptables.Prepend, iptables.Table("filter"), iptables.ChainForward,
 		"-m",
 		"comment",
 		"--comment",
@@ -82,12 +83,18 @@ func TestSyncFilterNetworkPolicyOnly(t *testing.T) {
 :WIGGLENET-NETPOL - [0:0]
 -A WIGGLENET-NETPOL -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
 -A WIGGLENET-NETPOL -p ipv6-icmp -j RETURN
--A WIGGLENET-NETPOL -d 2001:db8::1 -s 2001:db8::2 -j RETURN
+-A WIGGLENET-NETPOL -j WIGGLENET-NETPOL-EGR
+-A WIGGLENET-NETPOL -j WIGGLENET-NETPOL-ING
 -A WIGGLENET-NETPOL -j RETURN
+-F WIGGLENET-NETPOL-EGR
+:WIGGLENET-NETPOL-EGR - [0:0]
+-F WIGGLENET-NETPOL-ING
+:WIGGLENET-NETPOL-ING - [0:0]
+-A WIGGLENET-NETPOL-ING -d 2001:db8::1 -s 2001:db8::2 -j RETURN
 COMMIT
 `), iptables.NoFlushTables, iptables.NoRestoreCounters).Return(nil)
 
-	// Create a simple NetworkPolicy rule with IPv6 addresses
+	// Create a simple NetworkPolicy rule with IPv6 addresses (no port rules)
 	policyRules := []NetworkPolicyRule{
 		{
 			Direction:  "ingress",

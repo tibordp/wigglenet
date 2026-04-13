@@ -114,9 +114,9 @@ func TestBuildIngressRule(t *testing.T) {
 	assert.Equal(t, "allow", rule.Action)
 	assert.Len(t, rule.PodIPs, 1)
 	assert.Equal(t, "10.0.0.1", rule.PodIPs[0].String())
-	assert.Len(t, rule.Ports, 1)
-	assert.Equal(t, 80, rule.Ports[0])
-	assert.Equal(t, "TCP", rule.Protocol)
+	assert.Len(t, rule.PortRules, 1)
+	assert.Equal(t, 80, rule.PortRules[0].Port)
+	assert.Equal(t, "TCP", rule.PortRules[0].Protocol)
 	assert.Len(t, rule.AllowedIPs, 1)
 	assert.Equal(t, "10.0.0.2", rule.AllowedIPs[0].String())
 }
@@ -339,6 +339,122 @@ func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 	assert.True(t, podIPsWithIngressDeny[netip.MustParseAddr("2001:db8::1")])
 	assert.True(t, podIPsWithEgressDeny[netip.MustParseAddr("10.0.0.1")])
 	assert.True(t, podIPsWithEgressDeny[netip.MustParseAddr("2001:db8::1")])
+}
+
+func TestBuildIngressRuleMixedProtocols(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	c := &controller{
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
+				Namespace: "default",
+				Labels:    map[string]string{"app": "web"},
+			},
+			netip.MustParseAddr("10.0.0.2"): {
+				IP:        netip.MustParseAddr("10.0.0.2"),
+				Namespace: "default",
+				Labels:    map[string]string{"app": "backend"},
+			},
+		},
+		namespaces: map[string]map[string]string{
+			"default": {"env": "prod"},
+		},
+	}
+
+	selectedPods := []PodInfo{
+		{IP: netip.MustParseAddr("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
+	}
+
+	port80 := intstr.FromInt(80)
+	port53 := intstr.FromInt(53)
+	protocolTCP := v1.ProtocolTCP
+	protocolUDP := v1.ProtocolUDP
+	ingressRule := networkingv1.NetworkPolicyIngressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Port: &port80, Protocol: &protocolTCP},
+			{Port: &port53, Protocol: &protocolUDP},
+		},
+		From: []networkingv1.NetworkPolicyPeer{
+			{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "backend"}}},
+		},
+	}
+
+	rule := c.buildIngressRule(ctx, selectedPods, ingressRule, "default")
+	assert.NotNil(t, rule)
+	assert.Len(t, rule.PortRules, 2)
+	assert.Equal(t, "TCP", rule.PortRules[0].Protocol)
+	assert.Equal(t, 80, rule.PortRules[0].Port)
+	assert.Equal(t, "UDP", rule.PortRules[1].Protocol)
+	assert.Equal(t, 53, rule.PortRules[1].Port)
+}
+
+func TestBuildIngressRuleEndPort(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	c := &controller{
+		pods: map[netip.Addr]PodInfo{
+			netip.MustParseAddr("10.0.0.1"): {
+				IP:        netip.MustParseAddr("10.0.0.1"),
+				Namespace: "default",
+				Labels:    map[string]string{"app": "web"},
+			},
+		},
+		namespaces: map[string]map[string]string{
+			"default": {"env": "prod"},
+		},
+	}
+
+	selectedPods := []PodInfo{
+		{IP: netip.MustParseAddr("10.0.0.1"), Namespace: "default", Labels: map[string]string{"app": "web"}},
+	}
+
+	port8000 := intstr.FromInt(8000)
+	endPort := int32(9000)
+	protocolTCP := v1.ProtocolTCP
+	ingressRule := networkingv1.NetworkPolicyIngressRule{
+		Ports: []networkingv1.NetworkPolicyPort{
+			{Port: &port8000, Protocol: &protocolTCP, EndPort: &endPort},
+		},
+	}
+
+	rule := c.buildIngressRule(ctx, selectedPods, ingressRule, "default")
+	assert.NotNil(t, rule)
+	assert.Len(t, rule.PortRules, 1)
+	assert.Equal(t, 8000, rule.PortRules[0].Port)
+	assert.Equal(t, 9000, rule.PortRules[0].EndPort)
+}
+
+func TestProcessNetworkPolicyPeerIPBlockExcept(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	c := &controller{
+		pods:       map[netip.Addr]PodInfo{},
+		namespaces: map[string]map[string]string{},
+	}
+
+	rule := &firewall.NetworkPolicyRule{Direction: "ingress"}
+	peer := networkingv1.NetworkPolicyPeer{
+		IPBlock: &networkingv1.IPBlock{
+			CIDR:   "10.0.0.0/8",
+			Except: []string{"10.0.5.0/24"},
+		},
+	}
+	c.processNetworkPolicyPeer(ctx, peer, rule, "default")
+
+	// Should have CIDRs covering 10.0.0.0/8 minus 10.0.5.0/24
+	assert.NotEmpty(t, rule.AllowedCIDRs)
+
+	// 10.0.4.1 should be covered, 10.0.5.1 should not
+	found4 := false
+	found5 := false
+	for _, cidr := range rule.AllowedCIDRs {
+		if cidr.Contains(netip.MustParseAddr("10.0.4.1")) {
+			found4 = true
+		}
+		if cidr.Contains(netip.MustParseAddr("10.0.5.1")) {
+			found5 = true
+		}
+	}
+	assert.True(t, found4, "10.0.4.1 should be in the allowed CIDRs")
+	assert.False(t, found5, "10.0.5.1 should NOT be in the allowed CIDRs (excepted)")
 }
 
 // fakeIndexer implements cache.Indexer interface for testing
