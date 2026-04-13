@@ -8,6 +8,7 @@ import (
 
 	"github.com/tibordp/wigglenet/internal/firewall"
 	"github.com/tibordp/wigglenet/internal/util"
+
 	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
@@ -92,7 +93,7 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 
 	// Create indexers and informers
-	netpolIndexer, netpolInformer := cache.NewIndexerInformer(
+	netpolIndexer, netpolInformer := cache.NewTransformingIndexerInformer(
 		netpolListWatcher,
 		&networkingv1.NetworkPolicy{},
 		0,
@@ -102,9 +103,10 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 			DeleteFunc: func(obj interface{}) { queue.Add("networkpolicy") },
 		},
 		cache.Indexers{},
+		util.StripManagedFields,
 	)
 
-	podIndexer, podInformer := cache.NewIndexerInformer(
+	podIndexer, podInformer := cache.NewTransformingIndexerInformer(
 		podListWatcher,
 		&v1.Pod{},
 		0,
@@ -114,9 +116,10 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 			DeleteFunc: func(obj interface{}) { queue.Add("pod") },
 		},
 		cache.Indexers{},
+		util.StripManagedFields,
 	)
 
-	nsIndexer, nsInformer := cache.NewIndexerInformer(
+	nsIndexer, nsInformer := cache.NewTransformingIndexerInformer(
 		nsListWatcher,
 		&v1.Namespace{},
 		0,
@@ -126,6 +129,7 @@ func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall
 			DeleteFunc: func(obj interface{}) { queue.Add("namespace") },
 		},
 		cache.Indexers{},
+		util.StripManagedFields,
 	)
 
 	return &controller{

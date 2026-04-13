@@ -43,7 +43,7 @@ type controller struct {
 func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []netip.Prefix) *controller {
 	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-	indexer, informer := cache.NewIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
+	indexer, informer := cache.NewTransformingIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
@@ -62,7 +62,7 @@ func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Ma
 				queue.Add(key)
 			}
 		},
-	}, cache.Indexers{})
+	}, cache.Indexers{}, util.StripManagedFields)
 
 	return &controller{
 		informer:       informer,
