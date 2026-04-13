@@ -11,6 +11,7 @@ import (
 	"github.com/tibordp/wigglenet/internal/annotation"
 	"github.com/tibordp/wigglenet/internal/cni"
 	"github.com/tibordp/wigglenet/internal/config"
+	"github.com/tibordp/wigglenet/internal/metrics"
 	"github.com/tibordp/wigglenet/internal/util"
 	"github.com/tibordp/wigglenet/internal/wireguard"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -107,6 +108,10 @@ func (c *controller) applyFirewallRules() error {
 		}
 	}
 
+	if config.EnableMetrics {
+		metrics.PodCIDRsTotal.Set(float64(len(podCIDRs)))
+	}
+
 	// Send pod CIDR updates to firewall manager
 	c.podCIDRUpdates <- podCIDRs
 	return nil
@@ -134,8 +139,12 @@ func (c *controller) applyWireguardConfiguration(ctx context.Context) error {
 		}
 	}
 
-	config := wireguard.NewConfig(localAddresses, peers)
-	return c.wireguard.ApplyConfiguration(ctx, &config, logger)
+	if config.EnableMetrics {
+		metrics.PeersTotal.Set(float64(len(peers)))
+	}
+
+	wgConfig := wireguard.NewConfig(localAddresses, peers)
+	return c.wireguard.ApplyConfiguration(ctx, &wgConfig, logger)
 }
 
 // ensureCNI writes the local CNI configuration to /etc/cni/net.d if there were

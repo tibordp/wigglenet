@@ -8,6 +8,7 @@ import (
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/controller"
 	"github.com/tibordp/wigglenet/internal/firewall"
+	"github.com/tibordp/wigglenet/internal/metrics"
 	"github.com/tibordp/wigglenet/internal/networkpolicy"
 	"github.com/tibordp/wigglenet/internal/wireguard"
 
@@ -91,6 +92,13 @@ func (c *wigglenet) Run(ctx context.Context) {
 	// Start NetworkPolicy controller if enabled
 	if c.netpolController != nil {
 		wg.StartWithContext(ctx, c.netpolController.Run)
+	}
+
+	// Start metrics server if enabled
+	if config.EnableMetrics {
+		wg.StartWithContext(ctx, func(ctx context.Context) {
+			metrics.Run(ctx, config.MetricsBindAddr)
+		})
 	}
 
 	wg.Wait()

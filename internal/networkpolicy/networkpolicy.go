@@ -6,7 +6,9 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/firewall"
+	"github.com/tibordp/wigglenet/internal/metrics"
 	"github.com/tibordp/wigglenet/internal/util"
 
 	"k8s.io/klog/v2"
@@ -211,6 +213,20 @@ func (c *controller) syncState(ctx context.Context) error {
 	policyRules, err := c.generatePolicyRules(ctx)
 	if err != nil {
 		return err
+	}
+
+	if config.EnableMetrics {
+		ingressCount := 0
+		egressCount := 0
+		for _, r := range policyRules {
+			if r.Direction == "ingress" {
+				ingressCount++
+			} else {
+				egressCount++
+			}
+		}
+		metrics.NetworkPolicyRulesTotal.WithLabelValues("ingress").Set(float64(ingressCount))
+		metrics.NetworkPolicyRulesTotal.WithLabelValues("egress").Set(float64(egressCount))
 	}
 
 	// Send updated policy rules

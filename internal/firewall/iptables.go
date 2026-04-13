@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/config"
+	"github.com/tibordp/wigglenet/internal/metrics"
+
 	ipt "k8s.io/kubernetes/pkg/util/iptables"
 
 	klog "k8s.io/klog/v2"
@@ -91,7 +93,11 @@ func (c *iptablesManager) Run(ctx context.Context) {
 			}
 		}
 
+		start := time.Now()
 		err := c.syncRules(ctx)
+		if config.EnableMetrics {
+			metrics.RecordFirewallSync("iptables", time.Since(start), err)
+		}
 		if err != nil {
 			// Just log the error, we will retry in one minute if transient
 			logger.Error(err, "failed to sync firewall rules")
