@@ -71,7 +71,7 @@ func TestNftablesSyncFilterRules(t *testing.T) {
 	assert.Equal(t, "ct state established,related accept", rules[0].Rule)
 	assert.Equal(t, "meta nfproto ipv6 meta l4proto icmpv6 accept", rules[1].Rule)
 	assert.Contains(t, rules[2].Rule, "ip6 saddr @pod-cidrs-v6 accept")
-	assert.Equal(t, "drop", rules[3].Rule)
+	assert.Equal(t, "meta nfproto ipv6 drop", rules[3].Rule)
 
 	// Verify pod CIDR set was populated
 	v6Set := fake.Table.Sets[nftPodCIDRsV6]

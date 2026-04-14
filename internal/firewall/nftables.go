@@ -250,34 +250,35 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 			Rule:  "ct state established,related accept",
 		})
 
-		// Always allow ICMPv6
+		// Per-family filtering. The chain lives in an `inet` table and sees
+		// both address families, so each family's drop must be gated on
+		// `meta nfproto` — otherwise enabling FilterIPv6 alone would also
+		// drop all IPv4 forward traffic (and vice versa).
+		if config.FilterIPv4 {
+			tx.Add(&knftables.Rule{
+				Chain: nftFirewallChain,
+				Rule:  knftables.Concat("ip saddr", "@", nftPodCIDRsV4, "accept"),
+			})
+			tx.Add(&knftables.Rule{
+				Chain: nftFirewallChain,
+				Rule:  "meta nfproto ipv4 drop",
+			})
+		}
 		if config.FilterIPv6 {
 			tx.Add(&knftables.Rule{
 				Chain:   nftFirewallChain,
 				Rule:    "meta nfproto ipv6 meta l4proto icmpv6 accept",
 				Comment: knftables.PtrTo("allow ICMPv6 (RFC 4890)"),
 			})
-		}
-
-		// Allow traffic from pod CIDRs via set lookup
-		if config.FilterIPv4 {
-			tx.Add(&knftables.Rule{
-				Chain: nftFirewallChain,
-				Rule:  knftables.Concat("ip saddr", "@", nftPodCIDRsV4, "accept"),
-			})
-		}
-		if config.FilterIPv6 {
 			tx.Add(&knftables.Rule{
 				Chain: nftFirewallChain,
 				Rule:  knftables.Concat("ip6 saddr", "@", nftPodCIDRsV6, "accept"),
 			})
+			tx.Add(&knftables.Rule{
+				Chain: nftFirewallChain,
+				Rule:  "meta nfproto ipv6 drop",
+			})
 		}
-
-		// Drop everything else
-		tx.Add(&knftables.Rule{
-			Chain: nftFirewallChain,
-			Rule:  "drop",
-		})
 	}
 
 	// --- Masquerade chain ---
