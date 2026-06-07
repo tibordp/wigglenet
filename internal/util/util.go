@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
@@ -183,6 +184,67 @@ func GetInterfaceIPs(ctx context.Context, ifaces string) ([]netip.Addr, error) {
 		}
 	}
 	return ipAddresses, nil
+}
+
+// interfacePrefixesFrom builds the on-link prefix map from raw per-interface
+// addresses. Split out from GetInterfacePrefixes so it can be unit-tested
+// without touching the host's network configuration. Only global-unicast
+// addresses are kept (mirroring GetInterfaceIPs), and the on-link mask is
+// preserved so derivation logic can match on prefix length (e.g. a routed /64).
+func interfacePrefixesFrom(addrsByIface map[string][]net.Addr) map[string][]netip.Prefix {
+	result := make(map[string][]netip.Prefix)
+	for name, addrs := range addrsByIface {
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			prefix, ok := PrefixFromIPNet(*ipnet)
+			if !ok || !prefix.IsValid() {
+				continue
+			}
+			if !prefix.Addr().IsGlobalUnicast() {
+				continue
+			}
+			result[name] = append(result[name], prefix)
+		}
+	}
+
+	// Sort within each interface so that derivation (which often takes the
+	// first match) is deterministic regardless of kernel enumeration order.
+	for name := range result {
+		slices.SortFunc(result[name], func(a, b netip.Prefix) int {
+			if c := a.Addr().Compare(b.Addr()); c != 0 {
+				return c
+			}
+			return a.Bits() - b.Bits()
+		})
+	}
+	return result
+}
+
+// GetInterfacePrefixes returns the global-unicast on-link prefixes configured on
+// each network interface, keyed by interface name. This is the input to the CEL
+// pod-CIDR source, letting an expression derive pod CIDRs from interface state.
+func GetInterfacePrefixes(ctx context.Context) (map[string][]netip.Prefix, error) {
+	logger := klog.FromContext(ctx)
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	addrsByIface := make(map[string][]net.Addr, len(ifaces))
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			logger.Info("could not list interface addresses, skipping", "interface", iface.Name, "error", err)
+			continue
+		}
+		addrsByIface[iface.Name] = addrs
+	}
+
+	return interfacePrefixesFrom(addrsByIface), nil
 }
 
 func GetNodeAddresses(node *v1.Node) []netip.Addr {

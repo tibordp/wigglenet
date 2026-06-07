@@ -13,6 +13,7 @@ Wigglenet does not rely on a single contiguous pod network and it supports diffe
 - `none` - Wigglenet will not assign pods addresses of this family
 - `spec` - use the relevant networks from `.spec.podCIDR` (default for both IPv4 and IPv6)
 - `file` - read the prefixes from a file specified by `POD_CIDR_SOURCE_PATH` environment variable. File format is one network in CIDR format per line.
+- `expression` - derive the prefixes from the node's network interfaces and metadata using a [CEL](https://cel.dev/) expression (see [Expression-based pod CIDR derivation](#expression-based-pod-cidr-derivation) below)
 
 A use case for `file` mode is to have a [cloud-init](https://cloudinit.readthedocs.io/en/latest/) script determine the instance's routed IPv6 prefix and write it to a predetermined file on the host filesystem. Since the mode is independently selectable for each address family, this allows for additional flexibility for dynamic clusters where nodes are constantly joining and leaving.
 
@@ -32,7 +33,96 @@ networking:
     serviceSubnet: fd00::/112,172.16.0.0/16
 ```
 
-In the future Wireguard may provide additional modes, such as automatic network discovery based on uplink network interface or other metadata provided by the cloud provider.
+### Expression-based pod CIDR derivation
+
+For environments where the pod prefix has to be computed from the node's own networking — a common case with providers that route a fixed prefix (e.g. a `/64`) to each instance — the `expression` source lets you express that derivation inline, without a host-side setup script. The expression is written in [CEL](https://cel.dev/) (the [Common Expression Language](https://github.com/google/cel-spec/blob/master/doc/langdef.md), also used by Kubernetes for admission policies and validation rules), evaluated once per node at startup against the interfaces present on the host, and the result is used as that node's pod CIDR(s).
+
+Provide the expression either inline via `POD_CIDR_EXPRESSION`, or from a file via `POD_CIDR_EXPRESSION_PATH` (which takes precedence and is convenient to mount from a ConfigMap). The expression must evaluate to a `cidr` or a `list(cidr)`; results are masked to their network address and split by address family, so the same expression can serve both `POD_CIDR_SOURCE_IPV4=expression` and `POD_CIDR_SOURCE_IPV6=expression`.
+
+#### Inputs
+
+The expression has access to two variables:
+
+- `interfaces` — `map(string, list(cidr))`, keyed by interface name. Each entry is the list of global-unicast on-link prefixes configured on that interface, carrying the host address and the on-link mask (so `p.ip()` is the node's address and `p.prefixLength()` is the on-link prefix length, e.g. `64`). Link-local and loopback addresses are excluded, and the list is sorted (IPv4 before IPv6) for deterministic indexing.
+- `node` — `map(string, dyn)` with `node.name` (string), `node.labels` and `node.annotations` (`map(string, string)`). This allows label- or annotation-driven derivation, e.g. carving a different subnet per zone.
+
+#### Functions
+
+In addition to the standard [Kubernetes CEL IP/CIDR library](https://kubernetes.io/docs/reference/using-api/cel/#cidr-library) (`cidr()`, `ip()`, `.masked()`, `.prefixLength()`, `.ip()`, `.containsIP()`, `.containsCIDR()`, `.family()`, …) and the [CEL macros](https://github.com/google/cel-spec/blob/master/doc/langdef.md#macros) such as `filter`, `map` and `exists`, Wigglenet adds one verb:
+
+- `<cidr>.subnet(prefixLength, index)` — the `index`-th subnet of length `prefixLength` carved from the prefix (after masking it to its network address). `prefixLength` must be no shorter than the prefix's own length and no longer than the address width, and `index` must fall within the `2^(prefixLength - len)` available subnets; otherwise evaluation fails. For example `cidr("2001:db8:abcd:1234::/64").subnet(80, 1)` is `2001:db8:abcd:1234:1::/80`.
+
+Note that `filter` returns a `list(cidr)` (not a single element) and `subnet` is only defined on a single `cidr`, so use `[0]` to pick one element before calling `subnet`, or `map` to carve a subnet out of every match.
+
+#### Examples
+
+**Hetzner-style: the second `/80` of the routed `/64` on `eth0`.** Equivalent to `next(islice(net.subnets(16), 1, None))` over the on-link prefix:
+
+```yaml
+env:
+  - name: POD_CIDR_SOURCE_IPV6
+    value: expression
+  - name: POD_CIDR_EXPRESSION
+    value: |
+      interfaces["eth0"]
+        .filter(p, p.ip().family() == 6 && p.prefixLength() == 64)[0]
+        .subnet(80, 1)
+```
+
+**Dual-stack from a single expression.** Both families set to `expression`; return a `list(cidr)` mixing an IPv6 `/80` carved from the routed `/64` and an IPv4 `/26` carved from the on-link `/24`:
+
+```yaml
+env:
+  - name: POD_CIDR_SOURCE_IPV4
+    value: expression
+  - name: POD_CIDR_SOURCE_IPV6
+    value: expression
+  - name: POD_CIDR_EXPRESSION
+    value: |
+      [
+        interfaces["eth0"].filter(p, p.ip().family() == 6 && p.prefixLength() == 64)[0].subnet(80, 1),
+        interfaces["eth0"].filter(p, p.ip().family() == 4 && p.prefixLength() == 24)[0].subnet(26, 0)
+      ]
+```
+
+**Label-driven index.** Carve a different `/80` per zone, so prefixes never collide across failure domains:
+
+```yaml
+env:
+  - name: POD_CIDR_SOURCE_IPV6
+    value: expression
+  - name: POD_CIDR_EXPRESSION
+    value: |
+      interfaces["eth0"].filter(p, p.prefixLength() == 64)[0].subnet(
+        80,
+        node.labels["topology.kubernetes.io/zone"] == "eu-central" ? 1 : 2
+      )
+```
+
+**Mounting from a ConfigMap.** Keep the expression out of the manifest and point `POD_CIDR_EXPRESSION_PATH` at a mounted file:
+
+```yaml
+env:
+  - name: POD_CIDR_SOURCE_IPV6
+    value: expression
+  - name: POD_CIDR_EXPRESSION_PATH
+    value: /etc/wigglenet/pod-cidr.cel
+volumeMounts:
+  - name: pod-cidr-expression
+    mountPath: /etc/wigglenet
+    readOnly: true
+# ...
+volumes:
+  - name: pod-cidr-expression
+    configMap:
+      name: wigglenet-pod-cidr
+```
+
+#### Notes
+
+- The expression is compiled and type-checked at startup; a malformed expression or one that does not yield a `cidr`/`list(cidr)` makes the pod fail loudly rather than start with a wrong configuration.
+- If the expression yields no prefix for an address family that is configured to use `expression`, startup fails for that node, the same as the other sources.
+- When only one family uses `expression`, prefixes of the other family in the result are ignored — that family is taken from its own configured source.
 
 ## Firewall backend
 
