@@ -476,8 +476,10 @@ func (f *fakeIndexer) Get(obj interface{}) (item interface{}, exists bool, err e
 func (f *fakeIndexer) GetByKey(key string) (item interface{}, exists bool, err error) {
 	return nil, false, nil
 }
-func (f *fakeIndexer) Replace([]interface{}, string) error { return nil }
-func (f *fakeIndexer) Resync() error                       { return nil }
+func (f *fakeIndexer) Replace([]interface{}, string) error  { return nil }
+func (f *fakeIndexer) Resync() error                        { return nil }
+func (f *fakeIndexer) Bookmark(rv string)                   {}
+func (f *fakeIndexer) LastStoreSyncResourceVersion() string { return "" }
 func (f *fakeIndexer) Index(indexName string, obj interface{}) ([]interface{}, error) {
 	return nil, nil
 }

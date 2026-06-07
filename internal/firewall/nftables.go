@@ -20,24 +20,24 @@ const (
 	nftTable = "wigglenet"
 
 	// Chain names
-	nftForwardChain        = "forward"
-	nftPostroutingChain    = "postrouting"
-	nftFirewallChain       = "firewall"
-	nftNetpolChain         = "netpol"
-	nftNetpolEgressChain   = "netpol-egress"
-	nftNetpolIngressChain  = "netpol-ingress"
-	nftMasqueradeChain     = "masq"
+	nftForwardChain       = "forward"
+	nftPostroutingChain   = "postrouting"
+	nftFirewallChain      = "firewall"
+	nftNetpolChain        = "netpol"
+	nftNetpolEgressChain  = "netpol-egress"
+	nftNetpolIngressChain = "netpol-ingress"
+	nftMasqueradeChain    = "masq"
 
 	// Flowtable name
 	nftFlowtable = "fastpath"
 
 	// Set names
-	nftPodCIDRsV4         = "pod-cidrs-v4"
-	nftPodCIDRsV6         = "pod-cidrs-v6"
-	nftNetpolIngressV4    = "netpol-ingress-v4"
-	nftNetpolIngressV6    = "netpol-ingress-v6"
-	nftNetpolEgressV4     = "netpol-egress-v4"
-	nftNetpolEgressV6     = "netpol-egress-v6"
+	nftPodCIDRsV4      = "pod-cidrs-v4"
+	nftPodCIDRsV6      = "pod-cidrs-v6"
+	nftNetpolIngressV4 = "netpol-ingress-v4"
+	nftNetpolIngressV6 = "netpol-ingress-v6"
+	nftNetpolEgressV4  = "netpol-egress-v4"
+	nftNetpolEgressV6  = "netpol-egress-v6"
 
 	nftSyncInterval = 1 * time.Minute
 )

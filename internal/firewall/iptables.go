@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	filterChain      = ipt.Chain("WIGGLENET-FIREWALL")
-	netpolChain      = ipt.Chain("WIGGLENET-NETPOL")
+	filterChain        = ipt.Chain("WIGGLENET-FIREWALL")
+	netpolChain        = ipt.Chain("WIGGLENET-NETPOL")
 	netpolEgressChain  = ipt.Chain("WIGGLENET-NETPOL-EGR")
 	netpolIngressChain = ipt.Chain("WIGGLENET-NETPOL-ING")
-	natChain         = ipt.Chain("WIGGLENET-MASQ")
+	natChain           = ipt.Chain("WIGGLENET-MASQ")
 
 	// Sync iptables every minute
 	syncInterval = 1 * time.Minute

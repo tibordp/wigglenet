@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/tibordp/wigglenet/internal/annotation"
+	"github.com/tibordp/wigglenet/internal/celipam"
 	"github.com/tibordp/wigglenet/internal/config"
 	"github.com/tibordp/wigglenet/internal/util"
 	v1 "k8s.io/api/core/v1"
@@ -34,7 +37,18 @@ func setNodeAddressesAnnotation(ctx context.Context, node *v1.Node) error {
 	return nil
 }
 
-func getPodCidrsForSource(ctx context.Context, node *v1.Node, source config.PodCIDRSource, ipv6 bool) ([]netip.Prefix, error) {
+// podCidrResolver resolves a node's pod CIDRs from the configured per-family
+// sources. It memoizes the CEL evaluation so that, when both families use the
+// "expression" source, the expression is evaluated only once per node.
+type podCidrResolver struct {
+	node *v1.Node
+
+	celOnce sync.Once
+	celCidr []netip.Prefix
+	celErr  error
+}
+
+func (r *podCidrResolver) forSource(ctx context.Context, source config.PodCIDRSource, ipv6 bool) ([]netip.Prefix, error) {
 	logger := klog.FromContext(ctx)
 	podsCidrs := make([]netip.Prefix, 0)
 
@@ -64,8 +78,18 @@ func getPodCidrsForSource(ctx context.Context, node *v1.Node, source config.PodC
 			return nil, err
 		}
 	case config.SourceSpec:
-		specPodCidrs := util.GetPodCIDRsFromSpec(ctx, node)
+		specPodCidrs := util.GetPodCIDRsFromSpec(ctx, r.node)
 		for _, cidr := range specPodCidrs {
+			if cidr.Addr().Is6() == ipv6 {
+				podsCidrs = append(podsCidrs, cidr)
+			}
+		}
+	case config.SourceExpression:
+		celCidrs, err := r.celResult(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, cidr := range celCidrs {
 			if cidr.Addr().Is6() == ipv6 {
 				podsCidrs = append(podsCidrs, cidr)
 			}
@@ -83,15 +107,77 @@ func getPodCidrsForSource(ctx context.Context, node *v1.Node, source config.PodC
 	return podsCidrs, nil
 }
 
+// celResult evaluates the configured CEL pod-CIDR expression once, against this
+// node's interface and metadata state, and caches the result.
+func (r *podCidrResolver) celResult(ctx context.Context) ([]netip.Prefix, error) {
+	r.celOnce.Do(func() {
+		r.celCidr, r.celErr = evaluatePodCidrExpression(ctx, r.node)
+	})
+	return r.celCidr, r.celErr
+}
+
+func podCidrExpression() (string, error) {
+	if config.PodCidrExpressionPath != "" {
+		data, err := os.ReadFile(config.PodCidrExpressionPath)
+		if err != nil {
+			return "", fmt.Errorf("reading pod CIDR expression from %s: %w", config.PodCidrExpressionPath, err)
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	if config.PodCidrExpression != "" {
+		return config.PodCidrExpression, nil
+	}
+	return "", fmt.Errorf("pod CIDR source is %q but neither POD_CIDR_EXPRESSION nor POD_CIDR_EXPRESSION_PATH is set", config.SourceExpression)
+}
+
+func evaluatePodCidrExpression(ctx context.Context, node *v1.Node) ([]netip.Prefix, error) {
+	logger := klog.FromContext(ctx)
+
+	expression, err := podCidrExpression()
+	if err != nil {
+		return nil, err
+	}
+
+	evaluator, err := celipam.Compile(expression)
+	if err != nil {
+		return nil, err
+	}
+
+	interfaces, err := util.GetInterfacePrefixes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	cidrs, err := evaluator.Evaluate(celipam.Inputs{
+		Interfaces: interfaces,
+		Node: celipam.NodeInfo{
+			Name:        node.Name,
+			Labels:      node.Labels,
+			Annotations: node.Annotations,
+		},
+	})
+	if err != nil {
+		// Log the interface prefixes the expression saw to make a failed or
+		// empty derivation easier to debug.
+		logger.Error(err, "pod CIDR expression evaluation failed", "interfaces", interfaces)
+		return nil, err
+	}
+
+	logger.Info("derived pod CIDRs from expression", "cidrs", cidrs, "interfaces", interfaces)
+	return cidrs, nil
+}
+
 func setPodCidrsAnnotation(ctx context.Context, node *v1.Node) error {
+	resolver := &podCidrResolver{node: node}
+
 	podCidrs := make([]netip.Prefix, 0)
-	if cidrs, err := getPodCidrsForSource(ctx, node, config.PodCIDRSourceIPv6, true); err != nil {
+	if cidrs, err := resolver.forSource(ctx, config.PodCIDRSourceIPv6, true); err != nil {
 		return err
 	} else {
 		podCidrs = append(podCidrs, cidrs...)
 	}
 
-	if cidrs, err := getPodCidrsForSource(ctx, node, config.PodCIDRSourceIPv4, false); err != nil {
+	if cidrs, err := resolver.forSource(ctx, config.PodCIDRSourceIPv4, false); err != nil {
 		return err
 	} else {
 		podCidrs = append(podCidrs, cidrs...)

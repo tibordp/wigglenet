@@ -8,9 +8,10 @@ import (
 type PodCIDRSource string
 
 const (
-	SourceNone PodCIDRSource = "none"
-	SourceSpec PodCIDRSource = "spec"
-	SourceFile PodCIDRSource = "file"
+	SourceNone       PodCIDRSource = "none"
+	SourceSpec       PodCIDRSource = "spec"
+	SourceFile       PodCIDRSource = "file"
+	SourceExpression PodCIDRSource = "expression"
 )
 
 type FirewallBackend string
@@ -69,6 +70,12 @@ var (
 	// Where to take the pod CIDRs from, if mode is "file"
 	PodCidrSourceFilename string = os.Getenv("POD_CIDR_SOURCE_PATH")
 
+	// CEL expression deriving pod CIDRs from interface/node state, if mode is "expression".
+	// POD_CIDR_EXPRESSION_PATH (a file, e.g. mounted from a ConfigMap) takes
+	// precedence over the inline POD_CIDR_EXPRESSION.
+	PodCidrExpression     string = os.Getenv("POD_CIDR_EXPRESSION")
+	PodCidrExpressionPath string = os.Getenv("POD_CIDR_EXPRESSION_PATH")
+
 	// Enable NetworkPolicy support
 	EnableNetworkPolicy bool = GetEnvOrDefaultBool("ENABLE_NETWORK_POLICY", true)
 
@@ -76,11 +83,11 @@ var (
 	FirewallBackendMode FirewallBackend = FirewallBackend(GetEnvOrDefault("FIREWALL_BACKEND", string(BackendNftables)))
 
 	// Metrics settings
-	EnableMetrics        bool   = GetEnvOrDefaultBool("ENABLE_METRICS", false)
-	MetricsBindAddr      string = GetEnvOrDefault("METRICS_BIND_ADDR", ":9091")
-	MetricsTLSCertFile   string = GetEnvOrDefault("METRICS_TLS_CERT_FILE", "")
-	MetricsTLSKeyFile    string = GetEnvOrDefault("METRICS_TLS_KEY_FILE", "")
-	MetricsTLSClientCA   string = GetEnvOrDefault("METRICS_TLS_CLIENT_CA_FILE", "")
+	EnableMetrics      bool   = GetEnvOrDefaultBool("ENABLE_METRICS", false)
+	MetricsBindAddr    string = GetEnvOrDefault("METRICS_BIND_ADDR", ":9091")
+	MetricsTLSCertFile string = GetEnvOrDefault("METRICS_TLS_CERT_FILE", "")
+	MetricsTLSKeyFile  string = GetEnvOrDefault("METRICS_TLS_KEY_FILE", "")
+	MetricsTLSClientCA string = GetEnvOrDefault("METRICS_TLS_CLIENT_CA_FILE", "")
 
 	// Flowtable (fastpath) settings - nftables backend only
 	EnableFlowtable          bool   = GetEnvOrDefaultBool("ENABLE_FLOWTABLE", false)
