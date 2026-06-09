@@ -17,6 +17,10 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+// Version is the build version reported via the wigglenet_build_info metric.
+// It is overridden at build time with -ldflags "-X github.com/tibordp/wigglenet/internal.Version=<version>".
+var Version = "dev"
+
 type Wigglenet interface {
 	Run(ctx context.Context)
 }
@@ -70,7 +74,7 @@ func New(ctx context.Context) (Wigglenet, error) {
 	}
 
 	if config.EnableMetrics {
-		metrics.SetBuildInfo("0.5.0", string(config.FirewallBackendMode))
+		metrics.SetBuildInfo(Version, string(config.FirewallBackendMode))
 	}
 
 	// Populate the node annotations

@@ -17,8 +17,11 @@ kind-v4-only:
 kind-v6-singlestack:
 	kind create cluster --config testing/cluster_v6_singlestack.yaml
 
+# Version stamped into the wigglenet_build_info metric (derived from git).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+
 image:
-	docker build -t wigglenet .
+	docker build --build-arg VERSION=$(VERSION) -t wigglenet .
 	kind load docker-image wigglenet
 
 # Patch manifest to use local Docker image instead of one from Dockerhub
