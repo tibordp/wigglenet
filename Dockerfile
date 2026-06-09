@@ -19,8 +19,13 @@ RUN go mod download
 COPY cmd cmd
 COPY internal internal
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -o \
-    /wigglenetd ./cmd/wigglenet
+# Version reported via the wigglenet_build_info metric. Override with
+# `docker build --build-arg VERSION=v0.6.1 ...` (the Makefile derives it from git).
+ARG VERSION=dev
+
+RUN CGO_ENABLED=0 GOOS=linux go build -a \
+    -ldflags "-X github.com/tibordp/wigglenet/internal.Version=${VERSION}" \
+    -o /wigglenetd ./cmd/wigglenet
 
 FROM alpine:3.22
 # Install nftables 1.0.x from Alpine 3.20 rather than the default 1.1.x.
