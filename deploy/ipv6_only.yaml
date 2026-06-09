@@ -11,7 +11,7 @@ rules:
       - get
       - list
       - watch
-      - update
+      - patch
   # NetworkPolicy support requires access to pods, namespaces, and networkpolicies
   - apiGroups:
       - ""
