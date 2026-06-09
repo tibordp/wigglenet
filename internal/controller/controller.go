@@ -108,6 +108,12 @@ func (c *controller) applyFirewallRules() error {
 		}
 	}
 
+	// Node listing order is not stable (it comes from the informer cache map),
+	// so sort into a canonical order. Otherwise the firewall manager's
+	// deep-equality check would see a "change" on every node event and rewrite
+	// the whole ruleset needlessly.
+	util.SortPrefixes(podCIDRs)
+
 	if config.EnableMetrics {
 		metrics.PodCIDRsTotal.Set(float64(len(podCIDRs)))
 	}

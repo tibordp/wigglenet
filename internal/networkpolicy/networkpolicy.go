@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/tibordp/wigglenet/internal/config"
@@ -387,7 +389,71 @@ func (c *controller) generatePolicyRules(ctx context.Context) ([]firewall.Networ
 		})
 	}
 
+	// The rules above are assembled by iterating maps (pods, namespaces, the
+	// affected-pod sets), whose order is randomized in Go. Without canonicalizing,
+	// the generated slice would differ run-to-run for identical cluster state, so
+	// the firewall manager's reflect.DeepEqual change detection would fire on
+	// every pod/namespace event and rewrite the entire ruleset. Sort into a
+	// stable order so equivalent state compares equal.
+	canonicalizeRules(rules)
+
 	return rules, nil
+}
+
+// canonicalizeRules sorts a slice of NetworkPolicyRule (and the slices within
+// each rule) into a deterministic order, so that identical logical state always
+// produces a deep-equal result regardless of map iteration order.
+func canonicalizeRules(rules []firewall.NetworkPolicyRule) {
+	cmpAddr := func(a, b netip.Addr) int { return a.Compare(b) }
+
+	for i := range rules {
+		r := &rules[i]
+		slices.SortFunc(r.PodIPs, cmpAddr)
+		slices.SortFunc(r.AllowedIPs, cmpAddr)
+		util.SortPrefixes(r.AllowedCIDRs)
+		slices.SortFunc(r.PortRules, func(a, b firewall.PortRule) int {
+			if c := strings.Compare(a.Protocol, b.Protocol); c != 0 {
+				return c
+			}
+			if a.Port != b.Port {
+				return a.Port - b.Port
+			}
+			return a.EndPort - b.EndPort
+		})
+	}
+
+	slices.SortFunc(rules, func(a, b firewall.NetworkPolicyRule) int {
+		return strings.Compare(ruleSortKey(a), ruleSortKey(b))
+	})
+}
+
+// ruleSortKey builds a stable string key capturing every field of a rule. It
+// assumes the rule's inner slices have already been sorted.
+func ruleSortKey(r firewall.NetworkPolicyRule) string {
+	var sb strings.Builder
+	sb.WriteString(r.Direction)
+	sb.WriteByte('|')
+	sb.WriteString(r.Action)
+	sb.WriteByte('|')
+	for _, ip := range r.PodIPs {
+		sb.WriteString(ip.String())
+		sb.WriteByte(',')
+	}
+	sb.WriteByte('|')
+	for _, ip := range r.AllowedIPs {
+		sb.WriteString(ip.String())
+		sb.WriteByte(',')
+	}
+	sb.WriteByte('|')
+	for _, c := range r.AllowedCIDRs {
+		sb.WriteString(c.String())
+		sb.WriteByte(',')
+	}
+	sb.WriteByte('|')
+	for _, p := range r.PortRules {
+		fmt.Fprintf(&sb, "%s/%d/%d,", p.Protocol, p.Port, p.EndPort)
+	}
+	return sb.String()
 }
 
 func (c *controller) selectPods(ctx context.Context, namespace string, selector metav1.LabelSelector) []PodInfo {

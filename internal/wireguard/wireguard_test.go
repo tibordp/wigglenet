@@ -56,6 +56,42 @@ func TestCreateChangesetNoChange(t *testing.T) {
 	assert.Len(t, actual, 0)
 }
 
+func TestCreateChangesetNoChangeReorderedAllowedIPs(t *testing.T) {
+	// The existing peer carries the same AllowedIPs as desired, but in a
+	// different order and split differently across the Pod/Node CIDR buckets.
+	// peerNeedsUpdate compares them as a set, so this must produce no changeset;
+	// a positional comparison would have reported a spurious update.
+	existingPeers := []wgtypes.Peer{
+		{
+			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
+			Endpoint:  &net.UDPAddr{IP: net.ParseIP("192.168.0.1"), Port: 24601},
+			AllowedIPs: []net.IPNet{
+				parseCIDR("2001:db8:0:1::/64"),
+				parseCIDR("192.168.0.5/32"),
+				parseCIDR("192.168.0.0/24"),
+			},
+		},
+	}
+
+	desiredPeers := []Peer{
+		{
+			Endpoint: netip.MustParseAddr("192.168.0.1"),
+			PodCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.0/24"),
+				parsePrefix("2001:db8:0:1::/64"),
+			},
+			NodeCIDRs: []netip.Prefix{
+				parsePrefix("192.168.0.5/32"),
+			},
+			PublicKey: parseKey("2H+7wEq3SZOfPjNuoWatIUZnHIeR6SEiv5BiJmSJqEg="),
+		},
+	}
+
+	logger, _ := ktesting.NewTestContext(t)
+	actual := createPeerChangeset(logger, existingPeers, desiredPeers)
+	assert.Len(t, actual, 0, "reordered but identical AllowedIPs should not trigger an update")
+}
+
 func TestCreateChangesetAdd(t *testing.T) {
 	existingPeers := []wgtypes.Peer{
 		{

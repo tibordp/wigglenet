@@ -238,20 +238,28 @@ func (c *wireguardManager) reconcileAddresses(logger klog.Logger, addresses []ne
 }
 
 func peerNeedsUpdate(existingPeer *wgtypes.PeerConfig, peer *Peer) bool {
-	if len(existingPeer.AllowedIPs) != len(peer.NodeCIDRs)+len(peer.PodCIDRs) {
+	// Compare AllowedIPs as a set, not positionally: the kernel may return them
+	// in a different order than we configured them, and the desired set is also
+	// assembled from independently-ordered sources. A positional comparison would
+	// report a spurious change on every reconcile and re-issue ConfigureDevice.
+	desired := make(map[netip.Prefix]struct{}, len(peer.PodCIDRs)+len(peer.NodeCIDRs))
+	for _, p := range peer.PodCIDRs {
+		desired[p] = struct{}{}
+	}
+	for _, p := range peer.NodeCIDRs {
+		desired[p] = struct{}{}
+	}
+
+	if len(existingPeer.AllowedIPs) != len(desired) {
 		return true
 	}
 
-	for i := range peer.PodCIDRs {
-		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[i])
-		if !ok || existingPrefix != peer.PodCIDRs[i] {
+	for _, allowedIP := range existingPeer.AllowedIPs {
+		existingPrefix, ok := util.PrefixFromIPNet(allowedIP)
+		if !ok {
 			return true
 		}
-	}
-
-	for i := range peer.NodeCIDRs {
-		existingPrefix, ok := util.PrefixFromIPNet(existingPeer.AllowedIPs[len(peer.PodCIDRs)+i])
-		if !ok || existingPrefix != peer.NodeCIDRs[i] {
+		if _, found := desired[existingPrefix]; !found {
 			return true
 		}
 	}
