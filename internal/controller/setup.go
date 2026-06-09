@@ -17,6 +17,7 @@ import (
 	"github.com/tibordp/wigglenet/internal/util"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"k8s.io/client-go/util/retry"
 
@@ -197,6 +198,10 @@ func SetupNode(ctx context.Context, nodeClient clientv1.NodeInterface, publicKey
 			return err
 		}
 
+		if node.ObjectMeta.Annotations == nil {
+			node.ObjectMeta.Annotations = map[string]string{}
+		}
+
 		if publicKey != nil {
 			node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation] = base64.StdEncoding.EncodeToString(publicKey)
 		}
@@ -209,7 +214,28 @@ func SetupNode(ctx context.Context, nodeClient clientv1.NodeInterface, publicKey
 			return err
 		}
 
-		_, err = nodeClient.Update(ctx, node, metav1.UpdateOptions{})
+		// Patch only the annotations wigglenet owns rather than PUT-ing the whole
+		// Node object. This lets the ClusterRole grant `patch` instead of `update`
+		// on nodes: `update` lets a token rewrite any field on any node (labels,
+		// taints, …), whereas a JSON merge patch here can only set these keys.
+		annotations := map[string]string{
+			annotation.NodeIpsAnnotation:  node.ObjectMeta.Annotations[annotation.NodeIpsAnnotation],
+			annotation.PodCidrsAnnotation: node.ObjectMeta.Annotations[annotation.PodCidrsAnnotation],
+		}
+		if publicKey != nil {
+			annotations[annotation.PublicKeyAnnotation] = node.ObjectMeta.Annotations[annotation.PublicKeyAnnotation]
+		}
+
+		patch, err := json.Marshal(map[string]any{
+			"metadata": map[string]any{
+				"annotations": annotations,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		_, err = nodeClient.Patch(ctx, config.CurrentNodeName, types.MergePatchType, patch, metav1.PatchOptions{})
 		return err
 	})
 }
