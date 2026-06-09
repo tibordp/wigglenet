@@ -336,6 +336,68 @@ func TestNftablesDualStack(t *testing.T) {
 	assert.True(t, foundV6Masq, "expected IPv6 masquerade skip rule")
 }
 
+// TestNftablesNetpolBeforeFirewall is a regression test for a NetworkPolicy
+// bypass: when global filtering and NetworkPolicy are both enabled, the forward
+// chain must jump to the netpol chain *before* the firewall chain. The firewall
+// chain whitelists pod-sourced traffic with a terminal `accept`, so if it ran
+// first it would short-circuit ruleset evaluation and skip NetworkPolicy for all
+// pod-to-pod traffic.
+func TestNftablesNetpolBeforeFirewall(t *testing.T) {
+	origFilterIPv4 := config.FilterIPv4
+	origFilterIPv6 := config.FilterIPv6
+	origMasqIPv4 := config.MasqueradeIPv4
+	origMasqIPv6 := config.MasqueradeIPv6
+	origNetpol := config.EnableNetworkPolicy
+	defer func() {
+		config.FilterIPv4 = origFilterIPv4
+		config.FilterIPv6 = origFilterIPv6
+		config.MasqueradeIPv4 = origMasqIPv4
+		config.MasqueradeIPv6 = origMasqIPv6
+		config.EnableNetworkPolicy = origNetpol
+	}()
+
+	config.FilterIPv4 = true
+	config.FilterIPv6 = true
+	config.MasqueradeIPv4 = false
+	config.MasqueradeIPv6 = false
+	config.EnableNetworkPolicy = true
+
+	fake := knftables.NewFake(knftables.InetFamily, nftTable)
+	manager := newTestNftablesManager(fake)
+	manager.currentPodCIDRs = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/24"),
+	}
+	manager.currentPolicies = []NetworkPolicyRule{
+		{
+			Direction: "ingress",
+			PodIPs:    []netip.Addr{netip.MustParseAddr("10.0.0.5")},
+			Action:    "deny",
+		},
+	}
+
+	err := manager.syncRules(context.Background())
+	require.NoError(t, err)
+
+	fwdChain := fake.Table.Chains[nftForwardChain]
+	require.NotNil(t, fwdChain)
+
+	netpolIdx, firewallIdx := -1, -1
+	for i, r := range fwdChain.Rules {
+		switch r.Rule {
+		case "jump " + nftNetpolChain:
+			netpolIdx = i
+		case "jump " + nftFirewallChain:
+			firewallIdx = i
+		}
+	}
+
+	require.NotEqual(t, -1, netpolIdx, "forward chain must jump to netpol chain")
+	require.NotEqual(t, -1, firewallIdx, "forward chain must jump to firewall chain")
+	assert.Less(t, netpolIdx, firewallIdx,
+		"netpol jump must come before firewall jump, otherwise the firewall chain's "+
+			"terminal accept of pod-sourced traffic bypasses NetworkPolicy")
+}
+
 func TestNftablesNetworkPolicyMultiplePeers(t *testing.T) {
 	origFilterIPv4 := config.FilterIPv4
 	origFilterIPv6 := config.FilterIPv6
