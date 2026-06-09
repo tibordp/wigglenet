@@ -82,10 +82,8 @@ func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Ma
 // processChanges gets called on any change to a node object as well as additions and removals.
 // it computes the new state of the world and adjust the local networking setup accordingly
 func (c *controller) processChanges(ctx context.Context, key string) error {
-	if !config.FirewallOnly && !config.NativeRouting {
-		if err := c.applyWireguardConfiguration(ctx); err != nil {
-			return err
-		}
+	if err := c.applyWireguardConfiguration(ctx); err != nil {
+		return err
 	}
 
 	if err := c.applyFirewallRules(); err != nil {
@@ -132,6 +130,10 @@ func (c *controller) applyFirewallRules() error {
 // applyWireguardConfiguration configures the Wireguard network interface and makes
 // appropriate changes to the routing table.
 func (c *controller) applyWireguardConfiguration(ctx context.Context) error {
+	if c.wireguard == nil {
+		return nil
+	}
+
 	logger := klog.FromContext(ctx)
 
 	nodes, err := c.nodeLister.List(labels.Everything())
