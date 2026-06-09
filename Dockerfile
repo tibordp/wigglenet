@@ -19,8 +19,6 @@ RUN go mod download
 COPY cmd cmd
 COPY internal internal
 
-# Version reported via the wigglenet_build_info metric. Override with
-# `docker build --build-arg VERSION=v0.6.1 ...` (the Makefile derives it from git).
 ARG VERSION=dev
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a \
