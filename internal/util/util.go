@@ -59,6 +59,22 @@ func PrefixesToIPNets(prefixes []netip.Prefix) []net.IPNet {
 	return ipnets
 }
 
+// ComparePrefix orders prefixes by network address, then by prefix length. It
+// gives a total order suitable for producing a canonical, deterministic slice.
+func ComparePrefix(a, b netip.Prefix) int {
+	if c := a.Addr().Compare(b.Addr()); c != 0 {
+		return c
+	}
+	return a.Bits() - b.Bits()
+}
+
+// SortPrefixes sorts prefixes in place into the canonical order defined by
+// ComparePrefix. Used to keep firewall/route inputs stable across syncs so that
+// deep-equality change detection does not fire on mere reordering.
+func SortPrefixes(prefixes []netip.Prefix) {
+	slices.SortFunc(prefixes, ComparePrefix)
+}
+
 func SingleHostCIDR(addr netip.Addr) netip.Prefix {
 	bits := 32
 	if addr.Is6() {
