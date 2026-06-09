@@ -208,18 +208,26 @@ func (c *nftablesManager) syncRules(ctx context.Context) error {
 				Comment: knftables.PtrTo("offload established flows to fastpath"),
 			})
 		}
-		if enableFilter {
-			tx.Add(&knftables.Rule{
-				Chain:   nftForwardChain,
-				Rule:    "jump " + nftFirewallChain,
-				Comment: knftables.PtrTo("global firewall filtering"),
-			})
-		}
+		// NetworkPolicy must be evaluated before the global firewall chain.
+		// The firewall chain whitelists pod-sourced traffic with a terminal
+		// `accept` verdict (see below), which would stop ruleset evaluation
+		// and bypass NetworkPolicy entirely for all pod-to-pod traffic if it
+		// ran first. The netpol chain instead uses `drop` (terminal) for denied
+		// traffic and falls through for allowed traffic, so anything it permits
+		// continues on to the firewall chain. This matches the iptables backend,
+		// which prepends the netpol jump ahead of the filter jump in FORWARD.
 		if enableNetpol {
 			tx.Add(&knftables.Rule{
 				Chain:   nftForwardChain,
 				Rule:    "jump " + nftNetpolChain,
 				Comment: knftables.PtrTo("NetworkPolicy enforcement"),
+			})
+		}
+		if enableFilter {
+			tx.Add(&knftables.Rule{
+				Chain:   nftForwardChain,
+				Rule:    "jump " + nftFirewallChain,
+				Comment: knftables.PtrTo("global firewall filtering"),
 			})
 		}
 	}
