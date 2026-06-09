@@ -10,6 +10,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	networkinglisters "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2/ktesting"
 )
@@ -249,45 +250,43 @@ func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 		namespaces: map[string]map[string]string{
 			"default": {"env": "prod"},
 		},
-		netpolIndexer: &fakeIndexer{
-			items: []interface{}{
-				&networkingv1.NetworkPolicy{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "web-netpol",
-						Namespace: "default",
+		netpolLister: newNetpolLister(
+			&networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "web-netpol",
+					Namespace: "default",
+				},
+				Spec: networkingv1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "web"},
 					},
-					Spec: networkingv1.NetworkPolicySpec{
-						PodSelector: metav1.LabelSelector{
-							MatchLabels: map[string]string{"app": "web"},
-						},
-						PolicyTypes: []networkingv1.PolicyType{
-							networkingv1.PolicyTypeIngress,
-							networkingv1.PolicyTypeEgress,
-						},
-						Ingress: []networkingv1.NetworkPolicyIngressRule{
-							{
-								From: []networkingv1.NetworkPolicyPeer{
-									{
-										PodSelector: &metav1.LabelSelector{
-											MatchLabels: map[string]string{"app": "backend"},
-										},
-									},
-								},
-								Ports: []networkingv1.NetworkPolicyPort{
-									{
-										Port:     &intstr.IntOrString{IntVal: 80},
-										Protocol: &[]v1.Protocol{v1.ProtocolTCP}[0],
+					PolicyTypes: []networkingv1.PolicyType{
+						networkingv1.PolicyTypeIngress,
+						networkingv1.PolicyTypeEgress,
+					},
+					Ingress: []networkingv1.NetworkPolicyIngressRule{
+						{
+							From: []networkingv1.NetworkPolicyPeer{
+								{
+									PodSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{"app": "backend"},
 									},
 								},
 							},
+							Ports: []networkingv1.NetworkPolicyPort{
+								{
+									Port:     &intstr.IntOrString{IntVal: 80},
+									Protocol: &[]v1.Protocol{v1.ProtocolTCP}[0],
+								},
+							},
 						},
-						Egress: []networkingv1.NetworkPolicyEgressRule{
-							{
-								To: []networkingv1.NetworkPolicyPeer{
-									{
-										IPBlock: &networkingv1.IPBlock{
-											CIDR: "0.0.0.0/0",
-										},
+					},
+					Egress: []networkingv1.NetworkPolicyEgressRule{
+						{
+							To: []networkingv1.NetworkPolicyPeer{
+								{
+									IPBlock: &networkingv1.IPBlock{
+										CIDR: "0.0.0.0/0",
 									},
 								},
 							},
@@ -295,7 +294,7 @@ func TestGeneratePolicyRulesWithDefaultDeny(t *testing.T) {
 					},
 				},
 			},
-		},
+		),
 	}
 
 	rules, err := c.generatePolicyRules(ctx)
@@ -457,36 +456,14 @@ func TestProcessNetworkPolicyPeerIPBlockExcept(t *testing.T) {
 	assert.False(t, found5, "10.0.5.1 should NOT be in the allowed CIDRs (excepted)")
 }
 
-// fakeIndexer implements cache.Indexer interface for testing
-type fakeIndexer struct {
-	items []interface{}
+// newNetpolLister builds a real NetworkPolicyLister backed by an in-memory
+// indexer, for tests that exercise generatePolicyRules.
+func newNetpolLister(netpols ...*networkingv1.NetworkPolicy) networkinglisters.NetworkPolicyLister {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{
+		cache.NamespaceIndex: cache.MetaNamespaceIndexFunc,
+	})
+	for _, np := range netpols {
+		_ = indexer.Add(np)
+	}
+	return networkinglisters.NewNetworkPolicyLister(indexer)
 }
-
-func (f *fakeIndexer) List() []interface{} {
-	return f.items
-}
-
-func (f *fakeIndexer) Add(obj interface{}) error    { return nil }
-func (f *fakeIndexer) Update(obj interface{}) error { return nil }
-func (f *fakeIndexer) Delete(obj interface{}) error { return nil }
-func (f *fakeIndexer) ListKeys() []string           { return nil }
-func (f *fakeIndexer) Get(obj interface{}) (item interface{}, exists bool, err error) {
-	return nil, false, nil
-}
-func (f *fakeIndexer) GetByKey(key string) (item interface{}, exists bool, err error) {
-	return nil, false, nil
-}
-func (f *fakeIndexer) Replace([]interface{}, string) error  { return nil }
-func (f *fakeIndexer) Resync() error                        { return nil }
-func (f *fakeIndexer) Bookmark(rv string)                   {}
-func (f *fakeIndexer) LastStoreSyncResourceVersion() string { return "" }
-func (f *fakeIndexer) Index(indexName string, obj interface{}) ([]interface{}, error) {
-	return nil, nil
-}
-func (f *fakeIndexer) IndexKeys(indexName, indexKey string) ([]string, error) { return nil, nil }
-func (f *fakeIndexer) ListIndexFuncValues(indexName string) []string          { return nil }
-func (f *fakeIndexer) ByIndex(indexName, indexKey string) ([]interface{}, error) {
-	return nil, nil
-}
-func (f *fakeIndexer) GetIndexers() cache.Indexers                  { return nil }
-func (f *fakeIndexer) AddIndexers(newIndexers cache.Indexers) error { return nil }

@@ -19,11 +19,13 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 
-	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -33,46 +35,48 @@ type Controller interface {
 }
 
 type controller struct {
-	indexer        cache.Indexer
+	factory        informers.SharedInformerFactory
+	nodeLister     listersv1.NodeLister
 	queue          workqueue.TypedRateLimitingInterface[string]
-	informer       cache.Controller
 	wireguard      wireguard.Manager
 	cniwriter      cni.CNIConfigWriter
 	podCIDRUpdates chan []netip.Prefix
 }
 
-func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []netip.Prefix) *controller {
-	nodeListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "nodes", v1.NamespaceAll, fields.Everything())
+func NewController(clientset kubernetes.Interface, wireguardManager wireguard.Manager, cniwriter cni.CNIConfigWriter, podCIDRUpdates chan []netip.Prefix) (*controller, error) {
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithTransform(util.StripManagedFields))
+	nodes := factory.Core().V1().Nodes()
+
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-	indexer, informer := cache.NewTransformingIndexerInformer(nodeListWatcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
+
+	if _, err := nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
+			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
 				queue.Add(key)
 			}
 		},
-		UpdateFunc: func(old interface{}, new interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(new)
-			if err == nil {
+		UpdateFunc: func(_, newObj interface{}) {
+			if key, err := cache.MetaNamespaceKeyFunc(newObj); err == nil {
 				queue.Add(key)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
+			if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
 				queue.Add(key)
 			}
 		},
-	}, cache.Indexers{}, util.StripManagedFields)
+	}); err != nil {
+		return nil, fmt.Errorf("registering node event handler: %w", err)
+	}
 
 	return &controller{
-		informer:       informer,
-		indexer:        indexer,
+		factory:        factory,
+		nodeLister:     nodes.Lister(),
 		queue:          queue,
 		wireguard:      wireguardManager,
 		cniwriter:      cniwriter,
 		podCIDRUpdates: podCIDRUpdates,
-	}
+	}, nil
 }
 
 // processChanges gets called on any change to a node object as well as additions and removals.
@@ -100,12 +104,14 @@ func (c *controller) processChanges(ctx context.Context, key string) error {
 // applyFirewallRules calculates the new pod network and sends it to the iptables sync
 // goroutine so that pod traffic can be appropriately filtered and masqueraded.
 func (c *controller) applyFirewallRules() error {
-	podCIDRs := make([]netip.Prefix, 0)
+	nodes, err := c.nodeLister.List(labels.Everything())
+	if err != nil {
+		return err
+	}
 
-	for _, v := range c.indexer.List() {
-		if node, ok := v.(*v1.Node); ok {
-			podCIDRs = append(podCIDRs, util.GetPodCIDRsFromAnnotation(node)...)
-		}
+	podCIDRs := make([]netip.Prefix, 0)
+	for _, node := range nodes {
+		podCIDRs = append(podCIDRs, util.GetPodCIDRsFromAnnotation(node)...)
 	}
 
 	// Node listing order is not stable (it comes from the informer cache map),
@@ -128,19 +134,21 @@ func (c *controller) applyFirewallRules() error {
 func (c *controller) applyWireguardConfiguration(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 
+	nodes, err := c.nodeLister.List(labels.Everything())
+	if err != nil {
+		return err
+	}
+
 	peers := make([]wireguard.Peer, 0)
 	localAddresses := make([]netip.Addr, 0)
 
-	for _, v := range c.indexer.List() {
-		if node, ok := v.(*v1.Node); ok {
-			if node.Name == config.CurrentNodeName {
-				podCIDRs := util.GetPodCIDRsFromAnnotation(node)
-				localAddresses = util.GetPodNetworkLocalAddresses(podCIDRs)
-			} else {
-				peer := makePeer(ctx, node)
-				if peer != nil {
-					peers = append(peers, *peer)
-				}
+	for _, node := range nodes {
+		if node.Name == config.CurrentNodeName {
+			podCIDRs := util.GetPodCIDRsFromAnnotation(node)
+			localAddresses = util.GetPodNetworkLocalAddresses(podCIDRs)
+		} else {
+			if peer := makePeer(ctx, node); peer != nil {
+				peers = append(peers, *peer)
 			}
 		}
 	}
@@ -158,23 +166,23 @@ func (c *controller) applyWireguardConfiguration(ctx context.Context) error {
 // e.g. if another address family is added to an existing cluster.
 func (c *controller) ensureCNI(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	item, exists, _ := c.indexer.GetByKey(config.CurrentNodeName)
-	if node, ok := item.(*v1.Node); exists && ok {
-		podCIDRs := util.GetPodCIDRsFromAnnotation(node)
-
-		if len(podCIDRs) == 0 {
-			logger.Info("node does not have PodCIDRs assigned yet", "node", node.Name)
-			return nil
-		}
-
-		config := cni.CNIConfig{
-			PodCIDRs: podCIDRs,
-		}
-
-		return c.cniwriter.WriteCNIConfig(ctx, config, logger)
+	node, err := c.nodeLister.Get(config.CurrentNodeName)
+	if err != nil {
+		// Node not yet observed in the cache; nothing to write.
+		return nil
 	}
 
-	return nil
+	podCIDRs := util.GetPodCIDRsFromAnnotation(node)
+	if len(podCIDRs) == 0 {
+		logger.Info("node does not have PodCIDRs assigned yet", "node", node.Name)
+		return nil
+	}
+
+	config := cni.CNIConfig{
+		PodCIDRs: podCIDRs,
+	}
+
+	return c.cniwriter.WriteCNIConfig(ctx, config, logger)
 }
 
 func getNodeAddresses(ctx context.Context, node *v1.Node) ([]netip.Addr, error) {
@@ -265,17 +273,17 @@ func (c *controller) Run(ctx context.Context) {
 	defer c.queue.ShutDown()
 	logger.Info("starting controller")
 
-	go c.informer.Run(ctx.Done())
+	c.factory.StartWithContext(ctx)
 
 	// Wait for all involved caches to be synced, before processing items from the queue is started
-	if !cache.WaitForCacheSync(ctx.Done(), c.informer.HasSynced) {
-		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
+	if err := c.factory.WaitForCacheSyncWithContext(ctx).AsError(); err != nil {
+		runtime.HandleErrorWithContext(ctx, err, "timed out waiting for caches to sync")
 		return
 	}
 
 	// After we have all the nodes in cache, sync the routing state
 	if err := c.applyWireguardConfiguration(ctx); err != nil {
-		runtime.HandleError(err)
+		runtime.HandleErrorWithContext(ctx, err, "failed initial wireguard configuration")
 	}
 
 	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
