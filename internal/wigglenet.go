@@ -48,10 +48,16 @@ func New(ctx context.Context) (Wigglenet, error) {
 	var publicKey []byte
 
 	if config.FirewallOnly {
-		ctrl = controller.NewController(clientset, nil, nil, podCIDRUpdates)
+		ctrl, err = controller.NewController(clientset, nil, nil, podCIDRUpdates)
+		if err != nil {
+			return nil, err
+		}
 	} else if config.NativeRouting {
 		cniwriter := cni.NewCNIConfigWriter()
-		ctrl = controller.NewController(clientset, nil, cniwriter, podCIDRUpdates)
+		ctrl, err = controller.NewController(clientset, nil, cniwriter, podCIDRUpdates)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		wg, err := wireguard.NewManager(ctx)
 		if err != nil {
@@ -59,7 +65,10 @@ func New(ctx context.Context) (Wigglenet, error) {
 		}
 
 		cniwriter := cni.NewCNIConfigWriter()
-		ctrl = controller.NewController(clientset, wg, cniwriter, podCIDRUpdates)
+		ctrl, err = controller.NewController(clientset, wg, cniwriter, podCIDRUpdates)
+		if err != nil {
+			return nil, err
+		}
 		publicKey = wg.PublicKey()
 
 		if config.EnableMetrics {
@@ -70,7 +79,10 @@ func New(ctx context.Context) (Wigglenet, error) {
 	// Create NetworkPolicy controller if enabled
 	var netpolController networkpolicy.Controller
 	if config.EnableNetworkPolicy {
-		netpolController = networkpolicy.NewController(clientset, policyUpdates)
+		netpolController, err = networkpolicy.NewController(clientset, policyUpdates)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if config.EnableMetrics {

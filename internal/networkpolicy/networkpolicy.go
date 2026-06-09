@@ -18,12 +18,14 @@ import (
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	networkinglisters "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -47,20 +49,12 @@ type PodInfo struct {
 }
 
 type controller struct {
-	clientset     kubernetes.Interface
 	policyUpdates chan []firewall.NetworkPolicyRule
 
-	// NetworkPolicy informer
-	netpolIndexer  cache.Indexer
-	netpolInformer cache.Controller
-
-	// Pod informer
-	podIndexer  cache.Indexer
-	podInformer cache.Controller
-
-	// Namespace informer
-	nsIndexer  cache.Indexer
-	nsInformer cache.Controller
+	factory      informers.SharedInformerFactory
+	netpolLister networkinglisters.NetworkPolicyLister
+	podLister    corelisters.PodLister
+	nsLister     corelisters.NamespaceLister
 
 	queue workqueue.TypedRateLimitingInterface[string]
 
@@ -69,86 +63,48 @@ type controller struct {
 	namespaces map[string]map[string]string // namespace -> labels
 }
 
-func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall.NetworkPolicyRule) Controller {
-	// NetworkPolicy informer
-	netpolListWatcher := cache.NewListWatchFromClient(
-		clientset.NetworkingV1().RESTClient(),
-		"networkpolicies",
-		metav1.NamespaceAll,
-		fields.Everything(),
-	)
+func NewController(clientset kubernetes.Interface, policyUpdates chan []firewall.NetworkPolicyRule) (Controller, error) {
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 0, informers.WithTransform(util.StripManagedFields))
 
-	// Pod informer
-	podListWatcher := cache.NewListWatchFromClient(
-		clientset.CoreV1().RESTClient(),
-		"pods",
-		metav1.NamespaceAll,
-		fields.Everything(),
-	)
-
-	// Namespace informer
-	nsListWatcher := cache.NewListWatchFromClient(
-		clientset.CoreV1().RESTClient(),
-		"namespaces",
-		metav1.NamespaceAll,
-		fields.Everything(),
-	)
+	netpols := factory.Networking().V1().NetworkPolicies()
+	pods := factory.Core().V1().Pods()
+	namespaces := factory.Core().V1().Namespaces()
 
 	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
 
-	// Create indexers and informers
-	netpolIndexer, netpolInformer := cache.NewTransformingIndexerInformer(
-		netpolListWatcher,
-		&networkingv1.NetworkPolicy{},
-		0,
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { queue.Add("networkpolicy") },
-			UpdateFunc: func(old, new interface{}) { queue.Add("networkpolicy") },
-			DeleteFunc: func(obj interface{}) { queue.Add("networkpolicy") },
-		},
-		cache.Indexers{},
-		util.StripManagedFields,
-	)
+	// Every object change in any of the watched resources triggers a full
+	// resync, so the handlers collapse onto one queue key per resource type.
+	enqueueOn := func(key string) cache.ResourceEventHandlerFuncs {
+		return cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(interface{}) { queue.Add(key) },
+			UpdateFunc: func(interface{}, interface{}) { queue.Add(key) },
+			DeleteFunc: func(interface{}) { queue.Add(key) },
+		}
+	}
 
-	podIndexer, podInformer := cache.NewTransformingIndexerInformer(
-		podListWatcher,
-		&v1.Pod{},
-		0,
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { queue.Add("pod") },
-			UpdateFunc: func(old, new interface{}) { queue.Add("pod") },
-			DeleteFunc: func(obj interface{}) { queue.Add("pod") },
-		},
-		cache.Indexers{},
-		util.StripManagedFields,
-	)
-
-	nsIndexer, nsInformer := cache.NewTransformingIndexerInformer(
-		nsListWatcher,
-		&v1.Namespace{},
-		0,
-		cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { queue.Add("namespace") },
-			UpdateFunc: func(old, new interface{}) { queue.Add("namespace") },
-			DeleteFunc: func(obj interface{}) { queue.Add("namespace") },
-		},
-		cache.Indexers{},
-		util.StripManagedFields,
-	)
+	for _, reg := range []struct {
+		informer cache.SharedIndexInformer
+		key      string
+	}{
+		{netpols.Informer(), "networkpolicy"},
+		{pods.Informer(), "pod"},
+		{namespaces.Informer(), "namespace"},
+	} {
+		if _, err := reg.informer.AddEventHandler(enqueueOn(reg.key)); err != nil {
+			return nil, fmt.Errorf("registering %s event handler: %w", reg.key, err)
+		}
+	}
 
 	return &controller{
-		clientset:      clientset,
-		policyUpdates:  policyUpdates,
-		netpolIndexer:  netpolIndexer,
-		netpolInformer: netpolInformer,
-		podIndexer:     podIndexer,
-		podInformer:    podInformer,
-		nsIndexer:      nsIndexer,
-		nsInformer:     nsInformer,
-		queue:          queue,
-		pods:           make(map[netip.Addr]PodInfo),
-		namespaces:     make(map[string]map[string]string),
-	}
+		policyUpdates: policyUpdates,
+		factory:       factory,
+		netpolLister:  netpols.Lister(),
+		podLister:     pods.Lister(),
+		nsLister:      namespaces.Lister(),
+		queue:         queue,
+		pods:          make(map[netip.Addr]PodInfo),
+		namespaces:    make(map[string]map[string]string),
+	}, nil
 }
 
 func (c *controller) Run(ctx context.Context) {
@@ -158,22 +114,16 @@ func (c *controller) Run(ctx context.Context) {
 
 	logger.Info("starting NetworkPolicy controller")
 
-	// Start informers
-	go c.netpolInformer.Run(ctx.Done())
-	go c.podInformer.Run(ctx.Done())
-	go c.nsInformer.Run(ctx.Done())
-
-	// Wait for caches to sync
-	if !cache.WaitForCacheSync(ctx.Done(),
-		c.netpolInformer.HasSynced,
-		c.podInformer.HasSynced,
-		c.nsInformer.HasSynced) {
-		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
+	c.factory.StartWithContext(ctx)
+	if err := c.factory.WaitForCacheSyncWithContext(ctx).AsError(); err != nil {
+		runtime.HandleErrorWithContext(ctx, err, "timed out waiting for caches to sync")
 		return
 	}
 
 	// Initial sync
-	c.syncState(ctx)
+	if err := c.syncState(ctx); err != nil {
+		runtime.HandleErrorWithContext(ctx, err, "initial NetworkPolicy sync failed")
+	}
 
 	go wait.UntilWithContext(ctx, c.runWorker, time.Second)
 	<-ctx.Done()
@@ -205,11 +155,13 @@ func (c *controller) processNextItem(ctx context.Context) bool {
 }
 
 func (c *controller) syncState(ctx context.Context) error {
-	// Update pods map
-	c.updatePodsMap()
-
-	// Update namespaces map
-	c.updateNamespacesMap()
+	// Refresh the pod and namespace lookup maps from the informer caches.
+	if err := c.updatePodsMap(); err != nil {
+		return err
+	}
+	if err := c.updateNamespacesMap(); err != nil {
+		return err
+	}
 
 	// Generate NetworkPolicy rules
 	policyRules, err := c.generatePolicyRules(ctx)
@@ -237,53 +189,57 @@ func (c *controller) syncState(ctx context.Context) error {
 	return nil
 }
 
-func (c *controller) updatePodsMap() {
+func (c *controller) updatePodsMap() error {
+	podList, err := c.podLister.List(labels.Everything())
+	if err != nil {
+		return err
+	}
+
 	newPods := make(map[netip.Addr]PodInfo)
+	for _, pod := range podList {
+		if pod.Status.Phase != v1.PodRunning {
+			continue
+		}
 
-	for _, obj := range c.podIndexer.List() {
-		if pod, ok := obj.(*v1.Pod); ok {
-			if pod.Status.Phase == v1.PodRunning {
-				// Collect container ports for named-port resolution
-				var cPorts []ContainerPort
-				for _, container := range pod.Spec.Containers {
-					for _, cp := range container.Ports {
-						proto := "TCP"
-						if cp.Protocol != "" {
-							proto = string(cp.Protocol)
-						}
-						cPorts = append(cPorts, ContainerPort{
-							Name:          cp.Name,
-							ContainerPort: cp.ContainerPort,
-							Protocol:      proto,
-						})
+		// Collect container ports for named-port resolution
+		var cPorts []ContainerPort
+		for _, container := range pod.Spec.Containers {
+			for _, cp := range container.Ports {
+				proto := "TCP"
+				if cp.Protocol != "" {
+					proto = string(cp.Protocol)
+				}
+				cPorts = append(cPorts, ContainerPort{
+					Name:          cp.Name,
+					ContainerPort: cp.ContainerPort,
+					Protocol:      proto,
+				})
+			}
+		}
+
+		// Handle dual-stack: read all pod IPs from status.podIPs
+		for _, podIPStatus := range pod.Status.PodIPs {
+			if podIPStatus.IP != "" {
+				if addr, err := netip.ParseAddr(podIPStatus.IP); err == nil {
+					newPods[addr] = PodInfo{
+						IP:             addr,
+						Namespace:      pod.Namespace,
+						Labels:         pod.Labels,
+						ContainerPorts: cPorts,
 					}
 				}
+			}
+		}
 
-				// Handle dual-stack: read all pod IPs from status.podIPs
-				for _, podIPStatus := range pod.Status.PodIPs {
-					if podIPStatus.IP != "" {
-						if addr, err := netip.ParseAddr(podIPStatus.IP); err == nil {
-							newPods[addr] = PodInfo{
-								IP:             addr,
-								Namespace:      pod.Namespace,
-								Labels:         pod.Labels,
-								ContainerPorts: cPorts,
-							}
-						}
-					}
-				}
-
-				// Fallback to status.podIP for compatibility
-				if pod.Status.PodIP != "" {
-					if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil {
-						if _, exists := newPods[addr]; !exists {
-							newPods[addr] = PodInfo{
-								IP:             addr,
-								Namespace:      pod.Namespace,
-								Labels:         pod.Labels,
-								ContainerPorts: cPorts,
-							}
-						}
+		// Fallback to status.podIP for compatibility
+		if pod.Status.PodIP != "" {
+			if addr, err := netip.ParseAddr(pod.Status.PodIP); err == nil {
+				if _, exists := newPods[addr]; !exists {
+					newPods[addr] = PodInfo{
+						IP:             addr,
+						Namespace:      pod.Namespace,
+						Labels:         pod.Labels,
+						ContainerPorts: cPorts,
 					}
 				}
 			}
@@ -291,33 +247,37 @@ func (c *controller) updatePodsMap() {
 	}
 
 	c.pods = newPods
+	return nil
 }
 
-func (c *controller) updateNamespacesMap() {
-	newNamespaces := make(map[string]map[string]string)
+func (c *controller) updateNamespacesMap() error {
+	nsList, err := c.nsLister.List(labels.Everything())
+	if err != nil {
+		return err
+	}
 
-	for _, obj := range c.nsIndexer.List() {
-		if ns, ok := obj.(*v1.Namespace); ok {
-			newNamespaces[ns.Name] = ns.Labels
-		}
+	newNamespaces := make(map[string]map[string]string)
+	for _, ns := range nsList {
+		newNamespaces[ns.Name] = ns.Labels
 	}
 
 	c.namespaces = newNamespaces
+	return nil
 }
 
 func (c *controller) generatePolicyRules(ctx context.Context) ([]firewall.NetworkPolicyRule, error) {
+	netpols, err := c.netpolLister.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+
 	var rules []firewall.NetworkPolicyRule
 
 	// Track which pods are affected by policies (by direction)
 	affectedPodsIngress := make(map[netip.Addr]bool) // podIP -> true
 	affectedPodsEgress := make(map[netip.Addr]bool)  // podIP -> true
 
-	for _, obj := range c.netpolIndexer.List() {
-		netpol, ok := obj.(*networkingv1.NetworkPolicy)
-		if !ok {
-			continue
-		}
-
+	for _, netpol := range netpols {
 		// Find pods that this policy applies to
 		selectedPods := c.selectPods(ctx, netpol.Namespace, netpol.Spec.PodSelector)
 
