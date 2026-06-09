@@ -3,7 +3,6 @@ package metrics
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -129,59 +128,19 @@ func Run(ctx context.Context, addr string, tlsCfg *TLSConfig) {
 	}()
 
 	if tlsCfg != nil && tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
-		// Use k8s dynamic certificate infrastructure for automatic
-		// reload on file change (e.g. Secret-mounted certs rotated by
-		// kubelet or cert-manager).
-		servingCert, err := dynamiccertificates.NewDynamicServingContentFromFiles("wigglenet-metrics", tlsCfg.CertFile, tlsCfg.KeyFile)
+		tlsConfig, err := buildTLSConfig(ctx, tlsCfg)
 		if err != nil {
-			logger.Error(err, "failed to load serving certificate")
+			logger.Error(err, "failed to configure TLS")
 			return
 		}
-		go servingCert.Run(ctx, 1)
-
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-				certPEM, keyPEM := servingCert.CurrentCertKeyContent()
-				cert, err := tls.X509KeyPair(certPEM, keyPEM)
-				if err != nil {
-					return nil, err
-				}
-				return &cert, nil
-			},
-		}
+		server.TLSConfig = tlsConfig
 
 		if tlsCfg.ClientCAFile != "" {
-			clientCA, err := dynamiccertificates.NewDynamicCAContentFromFile("wigglenet-metrics-client-ca", tlsCfg.ClientCAFile)
-			if err != nil {
-				logger.Error(err, "failed to load client CA")
-				return
-			}
-			go clientCA.Run(ctx, 1)
-
-			tlsConfig.ClientAuth = tls.RequireAnyClientCert
-			tlsConfig.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-				verifyOpts, ok := clientCA.VerifyOptions()
-				if !ok {
-					return fmt.Errorf("client CA not yet loaded")
-				}
-				for _, rawCert := range rawCerts {
-					cert, err := x509.ParseCertificate(rawCert)
-					if err != nil {
-						return fmt.Errorf("failed to parse client certificate: %w", err)
-					}
-					if _, err := cert.Verify(verifyOpts); err != nil {
-						return fmt.Errorf("client certificate verification failed: %w", err)
-					}
-				}
-				return nil
-			}
 			logger.Info("starting metrics server with mTLS", "addr", addr)
 		} else {
 			logger.Info("starting metrics server with TLS", "addr", addr)
 		}
 
-		server.TLSConfig = tlsConfig
 		listener, err := tls.Listen("tcp", addr, tlsConfig)
 		if err != nil {
 			logger.Error(err, "failed to create TLS listener")
@@ -196,4 +155,56 @@ func Run(ctx context.Context, addr string, tlsCfg *TLSConfig) {
 			logger.Error(err, "metrics server failed")
 		}
 	}
+}
+
+// buildTLSConfig assembles the serving TLS config. Both the serving cert and the
+// (optional) client CA are loaded through the k8s dynamic certificate
+// infrastructure so they reload automatically when the files change on disk
+// (e.g. Secret-mounted certs rotated by kubelet or cert-manager).
+func buildTLSConfig(ctx context.Context, tlsCfg *TLSConfig) (*tls.Config, error) {
+	servingCert, err := dynamiccertificates.NewDynamicServingContentFromFiles("wigglenet-metrics", tlsCfg.CertFile, tlsCfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading serving certificate: %w", err)
+	}
+	go servingCert.Run(ctx, 1)
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			certPEM, keyPEM := servingCert.CurrentCertKeyContent()
+			cert, err := tls.X509KeyPair(certPEM, keyPEM)
+			if err != nil {
+				return nil, err
+			}
+			return &cert, nil
+		},
+	}
+
+	if tlsCfg.ClientCAFile != "" {
+		clientCA, err := dynamiccertificates.NewDynamicCAContentFromFile("wigglenet-metrics-client-ca", tlsCfg.ClientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading client CA: %w", err)
+		}
+		go clientCA.Run(ctx, 1)
+
+		// Let crypto/tls verify client certs against the CA bundle. With
+		// RequireAndVerifyClientCert + ClientCAs the standard library builds and
+		// validates the chain (using any intermediates the client presents) and
+		// enforces the client-auth EKU — no hand-rolled verification needed.
+		// GetConfigForClient supplies the current CA pool on each handshake so the
+		// bundle can still be rotated on disk without a restart.
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			opts, ok := clientCA.VerifyOptions()
+			if !ok {
+				return nil, fmt.Errorf("client CA not yet loaded")
+			}
+			c := tlsConfig.Clone()
+			c.GetConfigForClient = nil // the returned config must not recurse
+			c.ClientCAs = opts.Roots
+			return c, nil
+		}
+	}
+
+	return tlsConfig, nil
 }
