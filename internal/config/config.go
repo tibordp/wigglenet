@@ -89,6 +89,9 @@ var (
 	MetricsTLSKeyFile  string = GetEnvOrDefault("METRICS_TLS_KEY_FILE", "")
 	MetricsTLSClientCA string = GetEnvOrDefault("METRICS_TLS_CLIENT_CA_FILE", "")
 
+	// Readiness file, created once firewall rules are synced (empty to disable)
+	ReadyFile string = GetEnvOrDefault("READY_FILE", "/run/wigglenet-ready")
+
 	// Flowtable (fastpath) settings - nftables backend only
 	EnableFlowtable          bool   = GetEnvOrDefaultBool("ENABLE_FLOWTABLE", false)
 	FlowtableDevices         string = GetEnvOrDefault("FLOWTABLE_DEVICES", "")

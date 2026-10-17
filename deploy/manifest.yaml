@@ -158,6 +158,10 @@ spec:
           limits:
             cpu: "100m"
             memory: "50Mi"
+        readinessProbe:
+          exec:
+            command: ["test", "-e", "/run/wigglenet-ready"]
+          periodSeconds: 10
         securityContext:
           privileged: false
           capabilities:

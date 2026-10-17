@@ -41,6 +41,7 @@ type iptablesManager struct {
 	policyUpdates   chan []NetworkPolicyRule
 	currentPodCIDRs []netip.Prefix
 	currentPolicies []NetworkPolicyRule
+	readiness       readinessTracker
 }
 
 func newIptablesManager(podCIDRUpdates chan []netip.Prefix, policyUpdates chan []NetworkPolicyRule) Manager {
@@ -54,6 +55,7 @@ func newIptablesManager(podCIDRUpdates chan []netip.Prefix, policyUpdates chan [
 		policyUpdates:   policyUpdates,
 		currentPodCIDRs: []netip.Prefix{},
 		currentPolicies: []NetworkPolicyRule{},
+		readiness:       newReadinessTracker(),
 	}
 
 	return &m
@@ -98,6 +100,7 @@ func (c *iptablesManager) Run(ctx context.Context) {
 		if config.EnableMetrics {
 			metrics.RecordFirewallSync("iptables", time.Since(start), err)
 		}
+		c.readiness.record(ctx, err)
 		if err != nil {
 			// Just log the error, we will retry in one minute if transient
 			logger.Error(err, "failed to sync firewall rules")

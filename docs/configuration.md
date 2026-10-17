@@ -181,6 +181,10 @@ Wigglenet can run in a firewall-only mode by passing `FIREWALL_ONLY=1` environme
 
 Native routing is configured (`NATIVE_ROUTING_IPV4=1` / `NATIVE_ROUTING_IPV6=1`). Run in this mode, native routing will only be used for the selected address family instead of the Wireguard overlay. This assumes that there is something outside of the cluster that knows how to route packets for pods to the appropriate node, as generally the pod-to-pod traffic will be forwarded along the default route on each node.
 
+## Readiness
+
+Wigglenet creates the file `/run/wigglenet-ready` (configurable via `READY_FILE`, empty to disable) after the firewall rules are synced successfully, and removes it after 3 consecutive failed syncs. The bundled manifests use it as an exec readiness probe, so a node whose firewall rules can't be applied shows up as not ready and stops a DaemonSet rollout.
+
 ## Metrics
 
 Wigglenet can optionally expose Prometheus metrics and a health endpoint. This is controlled by the following environment variables:

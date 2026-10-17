@@ -48,6 +48,7 @@ type nftablesManager struct {
 	policyUpdates   chan []NetworkPolicyRule
 	currentPodCIDRs []netip.Prefix
 	currentPolicies []NetworkPolicyRule
+	readiness       readinessTracker
 }
 
 func newNftablesManager(podCIDRUpdates chan []netip.Prefix, policyUpdates chan []NetworkPolicyRule) (Manager, error) {
@@ -62,6 +63,7 @@ func newNftablesManager(podCIDRUpdates chan []netip.Prefix, policyUpdates chan [
 		policyUpdates:   policyUpdates,
 		currentPodCIDRs: []netip.Prefix{},
 		currentPolicies: []NetworkPolicyRule{},
+		readiness:       newReadinessTracker(),
 	}, nil
 }
 
@@ -102,6 +104,7 @@ func (c *nftablesManager) Run(ctx context.Context) {
 		if config.EnableMetrics {
 			metrics.RecordFirewallSync("nftables", time.Since(start), err)
 		}
+		c.readiness.record(ctx, err)
 		if err != nil {
 			logger.Error(err, "failed to sync nftables rules")
 		}
