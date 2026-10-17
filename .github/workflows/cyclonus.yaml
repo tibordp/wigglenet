@@ -12,21 +12,23 @@ jobs:
       matrix:
         firewall-backend: [nftables, iptables]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
 
       - name: Install kind
-        run: go install sigs.k8s.io/kind@latest
+        run: go install sigs.k8s.io/kind@v0.33.0
 
       - name: Install cyclonus
         run: go install github.com/mattfenwick/cyclonus/cmd/cyclonus@latest
 
       - name: Create kind cluster
-        run: kind create cluster --config testing/cluster.yaml
+        run: |
+          kind create cluster --config testing/cluster.yaml \
+            --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 
       - name: Build and load image
         run: |
