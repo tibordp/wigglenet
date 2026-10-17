@@ -13,18 +13,20 @@ jobs:
       fail-fast: false
       matrix:
         firewall-backend: [nftables, iptables]
+        kube-proxy-mode: [nftables, iptables]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
 
       - name: Install kind
-        run: go install sigs.k8s.io/kind@latest
+        run: go install sigs.k8s.io/kind@v0.33.0
 
-      - name: Run E2E tests (${{ matrix.firewall-backend }})
+      - name: Run E2E tests (wigglenet ${{ matrix.firewall-backend }}, kube-proxy ${{ matrix.kube-proxy-mode }})
         run: ./testing/e2e-test.sh
         env:
           FIREWALL_BACKEND: ${{ matrix.firewall-backend }}
+          KUBE_PROXY_MODE: ${{ matrix.kube-proxy-mode }}

@@ -12,6 +12,8 @@ CLUSTER_NAME="${CLUSTER_NAME:-kind}"
 CLUSTER_CONFIG="${CLUSTER_CONFIG:-testing/cluster.yaml}"
 TIMEOUT="${TIMEOUT:-300}"
 FIREWALL_BACKEND="${FIREWALL_BACKEND:-nftables}"
+KUBE_PROXY_MODE="${KUBE_PROXY_MODE:-iptables}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5}"
 
 # Logging functions
 log_info() {
@@ -72,7 +74,9 @@ create_cluster() {
         kind delete cluster --name "${CLUSTER_NAME}"
     fi
 
-    kind create cluster --name "${CLUSTER_NAME}" --config "${CLUSTER_CONFIG}"
+    awk -v mode="${KUBE_PROXY_MODE}" '{ print } /^networking:$/ { print "  kubeProxyMode: " mode }' \
+        "${CLUSTER_CONFIG}" \
+        | kind create cluster --name "${CLUSTER_NAME}" --image "${KIND_NODE_IMAGE}" --config -
 
     log_info "Cluster created (nodes won't be Ready until CNI is installed)"
 }
@@ -251,7 +255,7 @@ check_wigglenet_logs() {
     local found_errors=false
     for pod in $pods; do
         log_info "Checking logs for $pod"
-        local errors=$(kubectl --context="$context" logs -n kube-system "$pod" 2>&1 | grep -i "error" | grep -v "HandleError" || true)
+        local errors=$(kubectl --context="$context" logs -n kube-system "$pod" 2>&1 | grep -iE "error|^E[0-9]{4} " | grep -v "HandleError" || true)
 
         if [ -n "$errors" ]; then
             log_error "Found errors in $pod:"
@@ -416,7 +420,7 @@ cleanup_test_pods() {
 # Main execution
 main() {
     log_info "Starting wigglenet E2E test"
-    log_info "Cluster: ${CLUSTER_NAME}, Config: ${CLUSTER_CONFIG}, Timeout: ${TIMEOUT}s, Backend: ${FIREWALL_BACKEND}"
+    log_info "Cluster: ${CLUSTER_NAME}, Config: ${CLUSTER_CONFIG}, Timeout: ${TIMEOUT}s, Backend: ${FIREWALL_BACKEND}, kube-proxy: ${KUBE_PROXY_MODE}"
 
     check_prerequisites
     create_cluster
